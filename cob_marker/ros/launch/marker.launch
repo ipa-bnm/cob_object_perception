@@ -1,13 +1,17 @@
 <?xml version="1.0"?>
 <launch>
   <node pkg="cob_marker" type="cob_marker" name="cob_marker" output="screen">
-	<remap from="image_color" to="/cam3d/rgb/image_color"/>
-	<remap from="camera_info" to="/cam3d/rgb/camera_info"/>
-	<remap from="point_cloud" to="/cam3d/depth/points"/>
+	<remap from="/cob_marker/image_color" to="/cam3d/rgb/image_color"/>
+	<remap from="/cob_marker/camera_info" to="/cam3d/rgb/camera_info"/>
+	<remap from="/cob_marker/point_cloud" to="/cam3d/depth_registered/points"/>
 	<param name="algorithm" value="dmtx" />
 	<param name="frame_id" value="/head_cam3d_link"/>
-	<param name="dmtx_timeout" value="3.0" />
-	<param name="dmtx_max_markers" value="1" />
+	<param name="dmtx_timeout" value="5.0" />
+	<param name="publisher_enabled" value="true" />
+	<param name="service_enabled" value="true" />
+	<param name="action_enabled" value="true" />
+	<param name="dmtx_max_markers" value="2"/>
+	<param name="publish_2d_image" value="true"/>
   </node>
 
 </launch>
