@@ -68,7 +68,7 @@ public:
   struct SMarker {
     std::string code_;  //marker content like "stone"
     std::string format_;  //marker format like "Qr"
-    std::vector<Eigen::Vector2i> pts_; //points in color image
+    std::vector<Eigen::Vector2f> pts_; //points in color image
   };
 
   virtual ~GeneralMarker() {}

@@ -125,7 +125,7 @@ bool Marker_Zxing::findPattern(const sensor_msgs::Image &img, std::vector<SMarke
       m.format_ = barcodeFormatNames[results[i]->getBarcodeFormat()];
 
       for(size_t j=0; j<results[i]->getResultPoints().size(); j++) {
-        Eigen::Vector2i p;
+        Eigen::Vector2f p;
         p(0) = results[i]->getResultPoints()[j]->getX();
         p(1) = results[i]->getResultPoints()[j]->getY();
         m.pts_.push_back(p);
