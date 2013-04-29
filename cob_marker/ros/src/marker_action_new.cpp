@@ -232,7 +232,8 @@ public:
         }
         if (action_enabled_)
         {
-            detect_marker_action_ = new ActionServer(node_handle_, "marker_detection", boost::bind(&CobMarkerNode::detectMarkerActionCallback, this, _1), false);
+            detect_marker_action_ = new ActionServer(node_handle_, "object_detection", boost::bind(&CobMarkerNode::detectMarkerActionCallback, this, _1), false);
+            detect_marker_action_->start();
         }
 
         // Publisher for visualization/debugging
@@ -369,6 +370,7 @@ public:
         ROS_INFO("[cob_marker] Service Callback");
         // Connect to image topics
         bool result = false;
+        bool ret = true;
         //synchronizer_received_ = false;
         connectCallback();
         const double action_timeout = 5.;
@@ -384,7 +386,7 @@ public:
             else
             {
                 ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
-                return false;
+                ret = false;
             }
 
             // Wait for data (at least 5 seconds)
@@ -402,11 +404,14 @@ public:
             //	ROS_WARN("[fiducials] Could not receive image data");
             //	return false;
             //}
-            double time_start = ros::Time::now().toSec();
-
-            while(ros::Time::now().toSec()-time_start<action_timeout || result != true)
+            if(ret == true)
             {
-                result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                double time_start = ros::Time::now().toSec();
+
+                while(ros::Time::now().toSec()-time_start<action_timeout || result != true)
+                {
+                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                }
             }
         }
         disconnectCallback();
@@ -417,42 +422,49 @@ public:
     void detectMarkerActionCallback(const cob_object_detection_msgs::DetectObjectsGoalConstPtr &goal)
     {
         ROS_INFO("[cob_marker] Action Callback");
-        bool result = false;
+        bool result = true;
         connectCallback();
         cob_object_detection_msgs::DetectObjectsResult res;
 
         const double action_timeout = 5.;
 
         // Wait for data
+        double time_start = ros::Time::now().toSec();
+        while(ros::Time::now().toSec()-time_start<action_timeout)
         {
-            boost::mutex::scoped_lock lock( mutexQ_);
-            boost::system_time const timeout=boost::get_system_time()+ boost::posix_time::milliseconds(5000);
-
-            ROS_INFO("[cob_marker] Waiting for image data");
-            if (condQ_.timed_wait(lock, timeout))
-                ROS_INFO("[cob_marker] Waiting for image data [OK]");
-            else
             {
-                ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
-                result = false;
-            }
+                boost::mutex::scoped_lock lock( mutexQ_);
+                boost::system_time const timeout=boost::get_system_time()+ boost::posix_time::milliseconds(5000);
 
-            if (detect_marker_action_->isPreemptRequested() || !ros::ok())
-            {
-                detect_marker_action_->setPreempted();
-                return;
-            }
-            double time_start = ros::Time::now().toSec();
+                ROS_INFO("[cob_marker] Waiting for image data");
+                if (condQ_.timed_wait(lock, timeout))
+                    ROS_INFO("[cob_marker] Waiting for image data [OK]");
+                else
+                {
+                    ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
+                    result = false;
+                }
 
-            while(ros::Time::now().toSec()-time_start<action_timeout || result != true)
-            {
-                result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                if (detect_marker_action_->isPreemptRequested() || !ros::ok())
+                {
+                    detect_marker_action_->setPreempted();
+                    result = false;
+                }
+                if(result == true)
+                {
+                    result = false;
+                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    
+                    if(result)
+                    {
+                        detect_marker_action_->setSucceeded(res);
+                        break;
+                    }
+                }
             }
-            if(result)
-                detect_marker_action_->setSucceeded(res);
-            else
-                detect_marker_action_->setAborted(res);
         }
+        if (result == false)
+            detect_marker_action_->setAborted(res);
 
         disconnectCallback();
     }
