@@ -88,6 +88,8 @@
 #include <cob_object_detection_msgs/DetectObjectsActionGoal.h>
 #include <cob_object_detection_msgs/DetectObjectsActionResult.h>
 
+#include <opencv/cv.h>
+
 #include <cob_marker/general_marker.h>
 
 #include <boost/thread/mutex.hpp>
@@ -101,7 +103,7 @@ using namespace message_filters;
 namespace cob_marker
 {
 
-typedef sync_policies::ApproximateTime<sensor_msgs::Image,sensor_msgs::PointCloud2, sensor_msgs::CameraInfo> ColorDepthSyncPolicy;
+typedef sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::CameraInfo> ColorDepthSyncPolicy;
 
 
 /// @class CobFiducialsNode
@@ -152,6 +154,8 @@ private:
     std::string received_frame_id_;
 
     cv::Mat camera_matrix_;
+    cv::Mat m_camera_matrix;
+    cv::Mat m_extrinsic_XYfromC;
     bool camera_matrix_initialized_;
 
     bool publish_tf_;
@@ -273,12 +277,12 @@ public:
         ROS_INFO("[cob_marker] Subscribing to camera topics");
 
         color_camera_image_sub_.subscribe(*image_transport_0_, "image_color", 1);
-        depth_camera_image_sub_.subscribe(node_handle_, "point_cloud", 1);
+        //depth_camera_image_sub_.subscribe(node_handle_, "point_cloud", 1);
         color_camera_info_sub_.subscribe(node_handle_, "camera_info", 1);
 
-        color_image_sub_sync_ = boost::shared_ptr<message_filters::Synchronizer<ColorDepthSyncPolicy> >(new message_filters::Synchronizer<ColorDepthSyncPolicy>(ColorDepthSyncPolicy(2)));
-        color_image_sub_sync_->connectInput(color_camera_image_sub_, depth_camera_image_sub_, color_camera_info_sub_);
-        color_image_sub_sync_->registerCallback(boost::bind(&CobMarkerNode::cameraSyncCallback, this, _1, _2, _3));
+        color_image_sub_sync_ = boost::shared_ptr<message_filters::Synchronizer<ColorDepthSyncPolicy> >(new message_filters::Synchronizer<ColorDepthSyncPolicy>(ColorDepthSyncPolicy(3)));
+        color_image_sub_sync_->connectInput(color_camera_image_sub_, color_camera_info_sub_);
+        color_image_sub_sync_->registerCallback(boost::bind(&CobMarkerNode::cameraSyncCallback, this, _1, _2));
 
         sub_counter_++;
         ROS_INFO("[cob_marker] %i subscribers on camera topics [OK]", sub_counter_);
@@ -292,7 +296,7 @@ public:
             ROS_INFO("[cob_marker] Unsubscribing from camera topics");
 
             color_camera_image_sub_.unsubscribe();
-            depth_camera_image_sub_.unsubscribe();
+            //depth_camera_image_sub_.unsubscribe();
             color_camera_info_sub_.unsubscribe();
 
             sub_counter_--;
@@ -308,13 +312,11 @@ public:
     /// Callback is executed, when shared mode is selected
     /// Left and right is expressed when facing the back of the camera in horizontal orientation.
     void cameraSyncCallback(const sensor_msgs::ImageConstPtr& color_camera_data,
-                            const sensor_msgs::PointCloud2ConstPtr& msg_depth,
                             const sensor_msgs::CameraInfoConstPtr& color_camera_info)
     {
         ROS_INFO("[cob_marker] color image callback");
         {
             boost::mutex::scoped_lock lock( mutexQ_ );
-
 
             if (camera_matrix_initialized_ == false)
             {
@@ -327,12 +329,14 @@ public:
 
                 ROS_INFO("[cob_marker] Initializing fiducial detector with camera matrix");
                 camera_matrix_initialized_ = true;
+
+                InitMat(camera_matrix_);
             }
 
             // Receive
             received_timestamp_ = color_camera_data->header.stamp;
             received_frame_id_ = color_camera_data->header.frame_id;
-            buffered_point_cloud_ = msg_depth;
+            //buffered_point_cloud_ = msg_depth;
             buffered_image_ = color_camera_data;
 
 
@@ -479,112 +483,241 @@ public:
         unsigned int marker_array_size = 0;
         unsigned int pose_array_size = 0;
 
+        std::vector<std::vector<double> >vec_vec7d;
+        std::vector<cv::Mat> rot_vec;
+        std::vector<cv::Mat> trans_vec;
+
         double time_before_find = ros::Time::now().toSec();
         bool found = m_marker_detector->findPattern(*image, res);
         ROS_INFO("[cob_marker] findPattern: runtime %f s ; %d pattern found", (ros::Time::now().toSec() - time_before_find), (int)res.size());
         if(found)
         {
             pose_array_size = res.size();
-            pcl::PointCloud<pcl::PointXYZ> pc;
-            pcl::fromROSMsg(*point_cloud, pc);
-
-            for(size_t i=0; i<res.size(); i++)
+            ROS_INFO("pose_array_size: %i", pose_array_size);
+       
+            for (unsigned int i=0; i<pose_array_size; i++)
             {
-              //get 6DOF pose
-              if(res[i].pts_.size()<3)
-              {
-                ROS_WARN("need 3 points");
-                continue;
-              }
+                if(res[i].pts_.size()<=3)
+                {
+                  ROS_WARN("need 3 points");
+                  continue;
+                }
 
-              /*
-               *   1---3
-               *   |   |
-               *   0---2
-               */
-              Eigen::Vector2f d1 = (res[i].pts_[1]-res[i].pts_[0]).cast<float>();
-              Eigen::Vector2f d2 = (res[i].pts_[2]-res[i].pts_[0]).cast<float>();
+                ROS_DEBUG("num points detected: %i", res[i].pts_.size());
+                ROS_DEBUG("p1: %f %f", res[i].pts_[0](0), res[i].pts_[0](1)); 
+                ROS_DEBUG("p2: %f %f", res[i].pts_[1](0), res[i].pts_[1](1)); 
+                ROS_DEBUG("p3: %f %f", res[i].pts_[2](0), res[i].pts_[2](1)); 
+                ROS_DEBUG("p4: %f %f", res[i].pts_[3](0), res[i].pts_[3](1));
 
-              ROS_DEBUG("p1: %d %d", res[i].pts_[0](0), res[i].pts_[0](1)); 
-              ROS_DEBUG("p2: %d %d", res[i].pts_[1](0), res[i].pts_[1](1)); 
-              ROS_DEBUG("p3: %d %d", res[i].pts_[2](0), res[i].pts_[2](1)); 
-              ROS_DEBUG("p4: %d %d", res[i].pts_[3](0), res[i].pts_[3](1)); 
+                int nPoints = 0;
+                for (unsigned int j=0; j<res[i].pts_.size(); j++)
+                    if (res[i].pts_[j](0) != 0)
+                        nPoints++;
+                
+                cv::Mat pattern_coords(nPoints, 3, CV_32F);
+                cv::Mat image_coords(nPoints, 2, CV_32F);
+
+                float* p_pattern_coords = 0;
+                float* p_image_coords = 0;
+                int idx = 0;
+                double corners[4][3]={{-0.5,0.5,0},{0.5,0.5,0},{-0.5,-0.5,0},{0.5,-0.5,0}};
+
+                const double edge_size = 0.1;
+
+                for (unsigned int j=0; j<res[i].pts_.size(); j++)
+                {
+                    if (res[i].pts_[j](0) != 0)
+                    {
+                        p_pattern_coords = pattern_coords.ptr<float>(idx);
+                        p_pattern_coords[0] = -corners[j][1]*edge_size;
+                        p_pattern_coords[1] = corners[j][2]*edge_size;
+                        p_pattern_coords[2] = -corners[j][0]*edge_size;
+
+                        p_image_coords = image_coords.ptr<float>(idx);
+                        p_image_coords[0] = res[i].pts_[j](0);
+                        p_image_coords[1] = res[i].pts_[j](1);
+
+                        idx++;
+                    }
+                }
+
+                cv::Mat rot;
+                cv::Mat trans;
+                cv::Mat dist_coeffs;
+
+                cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
+                        rot, trans, false);
+
+                // float *p_rot = rot.ptr<float>(0);
+                // p_rot[0] = 0;
+                // p_rot[1] = 0;
+                // p_rot[2] = M_PI/2.0;
+                // cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
+                //         rot, trans, true);
+                cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
+                         rot, trans, false);
+                std::stringstream ss;
+                ss << "rot: "<<rot<<"\ntrans: "<<trans;
+                ROS_DEBUG("%s",ss.str().c_str());
+
+                //for(int i = 0; i < 3; i++)
+                //{
+                //    cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
+                //        rot, trans, true);
+                //}
+
+                // Apply transformation
+                cv::Mat rot_3x3_CfromO;
+                cv::Rodrigues(rot, rot_3x3_CfromO);
+
+                cv::Mat reprojection_matrix = m_camera_matrix;
+                if (!ProjectionValid(rot_3x3_CfromO, trans, reprojection_matrix, pattern_coords, image_coords))
+                {
+                    ROS_WARN("Projection Invalid");
+                    continue;
+                }
+
+                ApplyExtrinsics(rot_3x3_CfromO, trans);
+                rot_3x3_CfromO.copyTo(rot);
+                
+                rot_vec.push_back(rot);
+                trans_vec.push_back(trans);
+
+                // TODO: Set Mask
+                cv::Mat frame(3,4, CV_64FC1);
+                for (int k=0; k<3; k++)
+                    for (int l=0; l<3; l++)
+                        frame.at<double>(k,l) = rot.at<double>(k,l);
+                frame.at<double>(0,3) = trans.at<double>(0,0);
+                frame.at<double>(1,3) = trans.at<double>(1,0);
+                frame.at<double>(2,3) = trans.at<double>(2,0);
+                std::vector<double> vec7d = FrameToVec7(frame);
+                vec_vec7d.push_back(vec7d);
+
+                cob_object_detection_msgs::Detection det;
+
+                det.label = res[i].code_.substr(0,3);
+                det.detector = "cob_marker";
+                det.score = 0;
+                det.bounding_box_lwh.x = 0;
+                det.bounding_box_lwh.y = 0;
+                det.bounding_box_lwh.z = 0;
+                // Results are given in CfromO
+                det.pose.pose.position.x =  vec7d[0];
+                det.pose.pose.position.y =  vec7d[1];
+                det.pose.pose.position.z =  vec7d[2];
+                det.pose.pose.orientation.w =  vec7d[3];
+                det.pose.pose.orientation.x =  vec7d[4];
+                det.pose.pose.orientation.y =  vec7d[5];
+                det.pose.pose.orientation.z =  vec7d[6];
+
+                det.pose.header.stamp = received_timestamp_;
+                det.pose.header.frame_id = received_frame_id_;
+
+                detection_array.detections.push_back(det);
+                
+
+            // pcl::PointCloud<pcl::PointXYZ> pc;
+            // pcl::fromROSMsg(*point_cloud, pc);
+
+            // for(size_t i=0; i<res.size(); i++)
+            // {
+            //   //get 6DOF pose
+            //   if(res[i].pts_.size()<3)
+            //   {
+            //     ROS_WARN("need 3 points");
+            //     continue;
+            //   }
+
+            //   /*
+            //    *   1---3
+            //    *   |   |
+            //    *   0---2
+            //    */
+            //   Eigen::Vector2f d1 = (res[i].pts_[1]-res[i].pts_[0]).cast<float>();
+            //   Eigen::Vector2f d2 = (res[i].pts_[2]-res[i].pts_[0]).cast<float>();
+
+            //   ROS_DEBUG("p1: %d %d", res[i].pts_[0](0), res[i].pts_[0](1)); 
+            //   ROS_DEBUG("p2: %d %d", res[i].pts_[1](0), res[i].pts_[1](1)); 
+            //   ROS_DEBUG("p3: %d %d", res[i].pts_[2](0), res[i].pts_[2](1)); 
+            //   ROS_DEBUG("p4: %d %d", res[i].pts_[3](0), res[i].pts_[3](1)); 
               
-              ROS_DEBUG("d1: %f %f", d1(0), d1(1)); 
-              ROS_DEBUG("d2: %f %f", d2(0), d2(1)); 
+            //   ROS_DEBUG("d1: %f %f", d1(0), d1(1)); 
+            //   ROS_DEBUG("d2: %f %f", d2(0), d2(1)); 
 
-              int w1=std::max(std::abs(d1(0)),std::abs(d1(1)));
-              int w2=std::max(std::abs(d2(0)),std::abs(d2(1)));
-              d1/=w1;
-              d2/=w2;
+            //   int w1=std::max(std::abs(d1(0)),std::abs(d1(1)));
+            //   int w2=std::max(std::abs(d2(0)),std::abs(d2(1)));
+            //   d1/=w1;
+            //   d2/=w2;
 
-              pcl::PCA<pcl::PointCloud<pcl::PointXYZ>::PointType> pca1, pca2;
-              if(!compPCA(pca1, pc, w1, res[i].pts_[0],d1))
-                continue;
-              if(!compPCA(pca2, pc, w2, res[i].pts_[0],d2))
-                continue;
+            //   pcl::PCA<pcl::PointCloud<pcl::PointXYZ>::PointType> pca1, pca2;
+            //   if(!compPCA(pca1, pc, w1, res[i].pts_[0],d1))
+            //     continue;
+            //   if(!compPCA(pca2, pc, w2, res[i].pts_[0],d2))
+            //     continue;
 
-              int i1=0;
-              if(pca1.getEigenValues()[1]>pca1.getEigenValues()[i1]) i1=1;
-              if(pca1.getEigenValues()[2]>pca1.getEigenValues()[i1]) i1=2;
-              int i2=0;
-              if(pca2.getEigenValues()[1]>pca2.getEigenValues()[i2]) i2=1;
-              if(pca2.getEigenValues()[2]>pca2.getEigenValues()[i2]) i2=2;
+            //   int i1=0;
+            //   if(pca1.getEigenValues()[1]>pca1.getEigenValues()[i1]) i1=1;
+            //   if(pca1.getEigenValues()[2]>pca1.getEigenValues()[i1]) i1=2;
+            //   int i2=0;
+            //   if(pca2.getEigenValues()[1]>pca2.getEigenValues()[i2]) i2=1;
+            //   if(pca2.getEigenValues()[2]>pca2.getEigenValues()[i2]) i2=2;
 
-              if(pca1.getEigenVectors().col(i1).sum()<0)
-                pca1.getEigenVectors().col(i1)*=-1;
-              if(pca2.getEigenVectors().col(i2).sum()<0)
-                pca2.getEigenVectors().col(i2)*=-1;
+            //   if(pca1.getEigenVectors().col(i1).sum()<0)
+            //     pca1.getEigenVectors().col(i1)*=-1;
+            //   if(pca2.getEigenVectors().col(i2).sum()<0)
+            //     pca2.getEigenVectors().col(i2)*=-1;
 
-              Eigen::Vector3f m = (pca1.getMean()+pca2.getMean()).head<3>()/2;
-              Eigen::Matrix3f M, M2;
-              M.col(0) = pca2.getEigenVectors().col(i2);
-              M.col(1) = M.col(0).cross((Eigen::Vector3f)pca1.getEigenVectors().col(i1));
-              M.col(1).normalize();
-              M.col(2) = M.col(0).cross(M.col(1));
+            //   Eigen::Vector3f m = (pca1.getMean()+pca2.getMean()).head<3>()/2;
+            //   Eigen::Matrix3f M, M2;
+            //   M.col(0) = pca2.getEigenVectors().col(i2);
+            //   M.col(1) = M.col(0).cross((Eigen::Vector3f)pca1.getEigenVectors().col(i1));
+            //   M.col(1).normalize();
+            //   M.col(2) = M.col(0).cross(M.col(1));
 
-              Eigen::Quaternionf q(M);
-              M2 = M;
-              M2.col(1)=M.col(2);
-              M2.col(2)=M.col(1);
-              Eigen::Quaternionf q2(M);
+            //   Eigen::Quaternionf q(M);
+            //   M2 = M;
+            //   M2.col(1)=M.col(2);
+            //   M2.col(2)=M.col(1);
+            //   Eigen::Quaternionf q2(M);
 
-              //TODO: please change to ROS_DEBUG
-              ss.clear();
-              ss.str("");
-              ss<<"E\n"<<pca1.getEigenVectors()<<"\n";
-              ss<<"E\n"<<pca2.getEigenVectors()<<"\n";
-              ss<<"E\n"<<pca1.getEigenValues()<<"\n";
-              ss<<"E\n"<<pca2.getEigenValues()<<"\n";
-              ROS_DEBUG("%s",ss.str().c_str());
+            //   //TODO: please change to ROS_DEBUG
+            //   ss.clear();
+            //   ss.str("");
+            //   ss<<"E\n"<<pca1.getEigenVectors()<<"\n";
+            //   ss<<"E\n"<<pca2.getEigenVectors()<<"\n";
+            //   ss<<"E\n"<<pca1.getEigenValues()<<"\n";
+            //   ss<<"E\n"<<pca2.getEigenValues()<<"\n";
+            //   ROS_DEBUG("%s",ss.str().c_str());
               
-              ss.clear();
-              ss.str("");
-              ss<<"M\n"<<M2<<"\n";
-              ss<<"d\n"<<M.col(0).dot(M.col(1))<<"\n";
-              ss<<"d\n"<<M.col(0).dot(M.col(2))<<"\n";
-              ss<<"d\n"<<M.col(1).dot(M.col(2))<<"\n";
-              ROS_DEBUG("%s",ss.str().c_str());
-              //std::cout<<"m\n"<<m<<"\n";
+            //   ss.clear();
+            //   ss.str("");
+            //   ss<<"M\n"<<M2<<"\n";
+            //   ss<<"d\n"<<M.col(0).dot(M.col(1))<<"\n";
+            //   ss<<"d\n"<<M.col(0).dot(M.col(2))<<"\n";
+            //   ss<<"d\n"<<M.col(1).dot(M.col(2))<<"\n";
+            //   ROS_DEBUG("%s",ss.str().c_str());
+            //   //std::cout<<"m\n"<<m<<"\n";
 
-              cob_object_detection_msgs::Detection det;
-              det.header = point_cloud->header;
-              det.label = res[i].code_.substr(0,3);
-              det.detector = m_marker_detector->getName();
-              det.pose.header = point_cloud->header;
-              det.pose.pose.position.x = m(0);
-              det.pose.pose.position.y = m(1);
-              det.pose.pose.position.z = m(2);
-              det.pose.pose.orientation.w = q2.w();
-              det.pose.pose.orientation.x = q2.x();
-              det.pose.pose.orientation.y = q2.y();
-              det.pose.pose.orientation.z = q2.z();
-              detection_array.detections.push_back(det);
+              // cob_object_detection_msgs::Detection det;
+              // det.header = point_cloud->header;
+              // det.label = res[i].code_.substr(0,3);
+              // det.detector = m_marker_detector->getName();
+              // det.pose.header = point_cloud->header;
+              // det.pose.pose.position.x = m(0);
+              // det.pose.pose.position.y = m(1);
+              // det.pose.pose.position.z = m(2);
+              // det.pose.pose.orientation.w = q2.w();
+              // det.pose.pose.orientation.x = q2.x();
+              // det.pose.pose.orientation.y = q2.y();
+              // det.pose.pose.orientation.z = q2.z();
+              // detection_array.detections.push_back(det);
 
               ROS_INFO("[cob_marker] Detected Tag: '%s' at x,y,z,rw,rx,ry,rz ( %f, %f, %f, %f, %f, %f, %f )", det.label.c_str(),
                         det.pose.pose.position.x,det.pose.pose.position.y,det.pose.pose.position.z,
                         det.pose.pose.orientation.w, det.pose.pose.orientation.x, det.pose.pose.orientation.y, det.pose.pose.orientation.z);
-            }    
+            }
+            ROS_INFO("detection array size: %i",detection_array.detections.size());
             //Publish 2d imagebuffered_point_cloud_
             if (publish_2d_image_)
             {
@@ -602,24 +735,31 @@ public:
 
                 cv::Mat color_image = cv_ptr->image;
 
-                for (unsigned int i=0; i<pose_array_size; i++)
+                if(detection_array.detections.size() != pose_array_size)
                 {
-                    std::vector<double> pose(7, 0.0);
-                    pose[0] = detection_array.detections[i].pose.pose.position.x;
-                    pose[1] = detection_array.detections[i].pose.pose.position.y;
-                    pose[2] = detection_array.detections[i].pose.pose.position.z;
-                    pose[3] = detection_array.detections[i].pose.pose.orientation.w;
-                    pose[4] = detection_array.detections[i].pose.pose.orientation.x;
-                    pose[5] = detection_array.detections[i].pose.pose.orientation.y;
-                    pose[6] = detection_array.detections[i].pose.pose.orientation.z;
-                    cv::Mat rot_3x3;
-                    cv::Mat trans_3x1;
-                    cv::Mat frame_4x4 = Vec7ToFrame(pose);
+                    ROS_ERROR("size error!");
+                }
 
-                    rot_3x3 = frame_4x4(cv::Rect(0, 0, 3, 3));
-                    trans_3x1 = frame_4x4(cv::Rect(3, 0, 1, 3));
+                for (unsigned int i=0; i<detection_array.detections.size(); i++)
+                {
+                    // std::vector<double> pose(7, 0.0);
+                    // pose[0] = detection_array.detections[i].pose.pose.position.x;
+                    // pose[1] = detection_array.detections[i].pose.pose.position.y;
+                    // pose[2] = detection_array.detections[i].pose.pose.position.z;
+                    // pose[3] = detection_array.detections[i].pose.pose.orientation.w;
+                    // pose[4] = detection_array.detections[i].pose.pose.orientation.x;
+                    // pose[5] = detection_array.detections[i].pose.pose.orientation.y;
+                    // pose[6] = detection_array.detections[i].pose.pose.orientation.z;
+                    // cv::Mat rot_3x3;
+                    // cv::Mat trans_3x1;
+                    // cv::Mat frame_4x4 = Vec7ToFrame(pose);
 
-                    RenderPose(color_image, rot_3x3, trans_3x1);
+                    // rot_3x3 = frame_4x4(cv::Rect(0, 0, 3, 3));
+                    // trans_3x1 = frame_4x4(cv::Rect(3, 0, 1, 3));
+
+                    // RenderPose(color_image, rot_3x3, trans_3x1);
+
+                    RenderPose(color_image, rot_vec[i], trans_vec[i]);
 
                     cv_bridge::CvImage cv_ptr;
                     cv_ptr.image = color_image;
@@ -631,7 +771,7 @@ public:
             // Publish tf
             if (publish_tf_)
             {
-                for (unsigned int i=0; i<pose_array_size; i++)
+                for (unsigned int i=0; i<detection_array.detections.size(); i++)
                 {
                     // Broadcast transform of fiducial
                     tf::Transform transform;
@@ -660,7 +800,7 @@ public:
 
                 boost::hash<std::string> string_hash;
                 // publish a coordinate system from arrow markers for each object
-                for (unsigned int i=0; i<pose_array_size; i++)
+                for (unsigned int i=0; i<detection_array.detections.size(); i++)
                 {
                     for (unsigned int j=0; j<3; j++)
                     {
@@ -981,6 +1121,130 @@ public:
 
         return true;
     }
+
+    unsigned long InitMat(cv::Mat& camera_matrix, cv::Mat extrinsic_matrix = cv::Mat())
+    {
+        if (camera_matrix.empty())
+        {
+            std::cerr << "ERROR - AbstractFiducialModel::Init" << std::endl;
+            std::cerr << "\t [FAILED] Camera matrix not initialized" << std::endl;
+            return 0;
+        }
+        m_camera_matrix = camera_matrix.clone();
+
+        m_extrinsic_XYfromC = cv::Mat::zeros(4, 4, CV_64FC1);
+        if (extrinsic_matrix.empty())
+        {
+            // Unit matrix
+            for (int i=0; i<3; i++)
+                m_extrinsic_XYfromC.at<double>(i,i) = 1.0;
+        }
+        else
+        {
+            for (int i=0; i<3; i++)
+                for (int j=0; j<4; j++)
+                {
+                    m_extrinsic_XYfromC.at<double>(i,j) = extrinsic_matrix.at<double>(i,j);
+                }
+            m_extrinsic_XYfromC.at<double>(3,3) = 1.0;
+        }
+        return 1;
+    };
+
+    unsigned long ApplyExtrinsics(cv::Mat& rot_CfromO, cv::Mat& trans_CfromO)
+    {
+        cv::Mat frame_CfromO = cv::Mat::zeros(4, 4, CV_64FC1);
+
+        // Copy ORIGINAL rotation and translation to frame
+        for (int i=0; i<3; i++)
+        {
+            frame_CfromO.at<double>(i, 3) = trans_CfromO.at<double>(i,0);
+            for (int j=0; j<3; j++)
+            {
+                frame_CfromO.at<double>(i,j) = rot_CfromO.at<double>(i,j);
+            }
+        }
+        frame_CfromO.at<double>(3,3) = 1.0;
+
+        cv::Mat frame_XYfromO = m_extrinsic_XYfromC * frame_CfromO;
+
+        // Copy MODIFIED rotation and translation to frame
+        for (int i=0; i<3; i++)
+        {
+            trans_CfromO.at<double>(i, 0) = frame_XYfromO.at<double>(i,3);
+            for (int j=0; j<3; j++)
+            {
+                rot_CfromO.at<double>(i,j) = frame_XYfromO.at<double>(i,j);
+            }
+        }
+
+        return 1;
+    }
+
+    bool ProjectionValid(cv::Mat& rot_CfromO, cv::Mat& trans_CfromO, 
+        cv::Mat& camera_matrix, cv::Mat& pts_in_O, cv::Mat& image_coords)
+    {
+        double max_avg_pixel_error = 5;
+
+        // Check angles
+        float* p_pts_in_O = 0;
+        double* p_pt_in_O = 0;
+        double* p_pt_4x1_in_C = 0;
+        double* p_pt_3x1_in_C = 0;
+        double* p_pt_3x1_2D = 0;
+        float* p_image_coords;
+
+        cv::Mat pt_in_O(4, 1, CV_64FC1);
+        p_pt_in_O = pt_in_O.ptr<double>(0);
+        cv::Mat pt_4x1_in_C;
+        cv::Mat pt_3x1_in_C(3, 1, CV_64FC1);
+        p_pt_3x1_in_C = pt_3x1_in_C.ptr<double>(0);
+        cv::Mat pt_3x1_2D(3, 1, CV_64FC1);
+        p_pt_3x1_2D = pt_3x1_2D.ptr<double>(0);
+
+        // Create 4x4 frame CfromO
+        cv::Mat frame_CfromO = cv::Mat::zeros(4, 4, CV_64FC1);
+        for (int i=0; i<3; i++)
+        {
+            frame_CfromO.at<double>(i, 3) = trans_CfromO.at<double>(i,0);
+            for (int j=0; j<3; j++)
+            {
+                frame_CfromO.at<double>(i,j) = rot_CfromO.at<double>(i,j);
+            }
+        }
+        frame_CfromO.at<double>(3,3) = 1.0;
+
+        // Check reprojection error
+        double dist = 0;
+        for (unsigned int i=0; i<pts_in_O.rows; i++)
+        {
+            p_image_coords = image_coords.ptr<float>(i);
+            p_pts_in_O = pts_in_O.ptr<float>(i);
+
+            p_pt_in_O[0] = p_pts_in_O[0];
+            p_pt_in_O[1] = p_pts_in_O[1];
+            p_pt_in_O[2] = p_pts_in_O[2];
+            p_pt_in_O[3] = 1;
+
+            cv::Mat pt_4x1_in_C = frame_CfromO * pt_in_O;
+            p_pt_4x1_in_C = pt_4x1_in_C.ptr<double>(0);
+            p_pt_3x1_in_C[0] = p_pt_4x1_in_C[0]/p_pt_4x1_in_C[3];
+            p_pt_3x1_in_C[1] = p_pt_4x1_in_C[1]/p_pt_4x1_in_C[3];
+            p_pt_3x1_in_C[2] = p_pt_4x1_in_C[2]/p_pt_4x1_in_C[3];
+
+            pt_3x1_2D = camera_matrix * pt_3x1_in_C;
+            pt_3x1_2D /= p_pt_3x1_2D[2];
+
+            dist = std::sqrt((p_pt_3x1_2D[0] - p_image_coords[0])*(p_pt_3x1_2D[0] - p_image_coords[0])
+            + (p_pt_3x1_2D[1] - p_image_coords[1])*(p_pt_3x1_2D[1] - p_image_coords[1]));
+
+            if (dist > max_avg_pixel_error)
+                return false;
+        }
+
+        return true;
+    }
+
 };
 std::string CobMarkerNode::color_image_encoding_ = "bgr8";
 }; // END namepsace

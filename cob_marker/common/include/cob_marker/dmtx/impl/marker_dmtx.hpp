@@ -102,21 +102,21 @@ bool Marker_DMTX::findPattern(const sensor_msgs::Image &img, std::vector<SMarker
       dmtxMatrix3VMultiplyBy(&p11, reg->fit2raw);
       dmtxMatrix3VMultiplyBy(&p01, reg->fit2raw);
 
-      Eigen::Vector2i v;
-      v(0)=(int)((p01.X) + 0.5);
-      v(1)=img.height - 1 - (int)((p01.Y) + 0.5);
+      Eigen::Vector2f v;
+      v(0)=p01.X;
+      v(1)=img.height - 1 - p01.Y;
       m.pts_.push_back(v);
 
-      v(0)=(int)((p00.X) + 0.5);
-      v(1)=img.height - 1 - (int)((p00.Y) + 0.5);
+      v(0)=p00.X;
+      v(1)=img.height - 1 - p00.Y;
       m.pts_.push_back(v);
 
-      v(0)=(int)((p11.X) + 0.5);
-      v(1)=img.height - 1 - (int)((p11.Y) + 0.5);
+      v(0)=p11.X;
+      v(1)=img.height - 1 - p11.Y;
       m.pts_.push_back(v);
 
-      v(0)=(int)((p10.X) + 0.5);
-      v(1)=img.height - 1 - (int)((p10.Y) + 0.5);
+      v(0)=p10.X;
+      v(1)=img.height - 1 - p10.Y;
       m.pts_.push_back(v);
 
       res.push_back(m);
