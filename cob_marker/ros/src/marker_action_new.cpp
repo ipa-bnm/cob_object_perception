@@ -328,7 +328,7 @@ public:
                 camera_matrix_.at<double>(1,2) = color_camera_info->K[5];
                 camera_matrix_.at<double>(2,2) = 1;
 
-                ROS_INFO("[cob_marker] Initializing fiducial detector with camera matrix");
+                ROS_INFO("[cob_marker] Initializing cob_marker detector with camera matrix");
                 camera_matrix_initialized_ = true;
 
                 InitMat(camera_matrix_);
@@ -337,9 +337,7 @@ public:
             // Receive
             received_timestamp_ = color_camera_data->header.stamp;
             received_frame_id_ = color_camera_data->header.frame_id;
-            //buffered_point_cloud_ = msg_depth;
             buffered_image_ = color_camera_data;
-
 
             if (publisher_enabled_ == true && detect_marker_pub_.getNumSubscribers() > 0)
             {
