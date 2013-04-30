@@ -369,49 +369,36 @@ public:
     {
         ROS_INFO("[cob_marker] Service Callback");
         // Connect to image topics
-        bool result = false;
-        bool ret = true;
+        bool result = true;
         //synchronizer_received_ = false;
         connectCallback();
         const double action_timeout = 5.;
 
-        // Wait for data
+        double time_start = ros::Time::now().toSec();
+        while(ros::Time::now().toSec()-time_start<action_timeout)
         {
-            boost::mutex::scoped_lock lock( mutexQ_);
-            boost::system_time const timeout=boost::get_system_time()+ boost::posix_time::milliseconds(5000);
-
-            ROS_INFO("[cob_marker] Waiting for image data");
-            if (condQ_.timed_wait(lock, timeout))
-                ROS_INFO("[cob_marker] Waiting for image data [OK]");
-            else
+            // Wait for data
             {
-                ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
-                ret = false;
-            }
+                boost::mutex::scoped_lock lock( mutexQ_);
+                boost::system_time const timeout=boost::get_system_time()+ boost::posix_time::milliseconds(5000);
 
-            // Wait for data (at least 5 seconds)
-            //int nSecPassed = 0;
-            //float nSecIncrement = 0.5;
-            //while (!synchronizer_received_ && nSecPassed < 10)
-            //{
-            //	ros::Duration(nSecIncrement).sleep();
-            //	nSecPassed += nSecIncrement;
-            //	ROS_INFO("[fiducials] Waiting");
-            //}
-
-            //if (!synchronizer_received_)
-            //{
-            //	ROS_WARN("[fiducials] Could not receive image data");
-            //	return false;
-            //}
-            if(ret == true)
-            {
-                double time_start = ros::Time::now().toSec();
-
-                while(ros::Time::now().toSec()-time_start<action_timeout || result != true)
+                ROS_INFO("[cob_marker] Waiting for image data");
+                if (condQ_.timed_wait(lock, timeout))
+                    ROS_INFO("[cob_marker] Waiting for image data [OK]");
+                else
                 {
-                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
+                    result = false;
                 }
+
+                if(result == true)
+                {
+                    result = false;
+                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    if(result)
+                        break;
+                }
+
             }
         }
         disconnectCallback();
