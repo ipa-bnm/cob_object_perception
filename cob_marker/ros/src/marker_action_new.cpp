@@ -341,7 +341,7 @@ public:
             buffered_image_ = color_camera_data;
 
 
-            if (publisher_enabled_ == true)
+            if (publisher_enabled_ == true && detect_marker_pub_.getNumSubscribers() > 0)
             {
                 cob_object_detection_msgs::DetectionArray detection_array;
                 detectMarkers(detection_array, buffered_point_cloud_, buffered_image_);
@@ -369,49 +369,36 @@ public:
     {
         ROS_INFO("[cob_marker] Service Callback");
         // Connect to image topics
-        bool result = false;
-        bool ret = true;
+        bool result = true;
         //synchronizer_received_ = false;
         connectCallback();
         const double action_timeout = 5.;
 
-        // Wait for data
+        double time_start = ros::Time::now().toSec();
+        while(ros::Time::now().toSec()-time_start<action_timeout)
         {
-            boost::mutex::scoped_lock lock( mutexQ_);
-            boost::system_time const timeout=boost::get_system_time()+ boost::posix_time::milliseconds(5000);
-
-            ROS_INFO("[cob_marker] Waiting for image data");
-            if (condQ_.timed_wait(lock, timeout))
-                ROS_INFO("[cob_marker] Waiting for image data [OK]");
-            else
+            // Wait for data
             {
-                ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
-                ret = false;
-            }
+                boost::mutex::scoped_lock lock( mutexQ_);
+                boost::system_time const timeout=boost::get_system_time()+ boost::posix_time::milliseconds(5000);
 
-            // Wait for data (at least 5 seconds)
-            //int nSecPassed = 0;
-            //float nSecIncrement = 0.5;
-            //while (!synchronizer_received_ && nSecPassed < 10)
-            //{
-            //	ros::Duration(nSecIncrement).sleep();
-            //	nSecPassed += nSecIncrement;
-            //	ROS_INFO("[fiducials] Waiting");
-            //}
-
-            //if (!synchronizer_received_)
-            //{
-            //	ROS_WARN("[fiducials] Could not receive image data");
-            //	return false;
-            //}
-            if(ret == true)
-            {
-                double time_start = ros::Time::now().toSec();
-
-                while(ros::Time::now().toSec()-time_start<action_timeout || result != true)
+                ROS_INFO("[cob_marker] Waiting for image data");
+                if (condQ_.timed_wait(lock, timeout))
+                    ROS_INFO("[cob_marker] Waiting for image data [OK]");
+                else
                 {
-                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    ROS_WARN("[cob_marker] Could not receive image data from ApproximateTime synchronizer");
+                    result = false;
                 }
+
+                if(result == true)
+                {
+                    result = false;
+                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    if(result)
+                        break;
+                }
+
             }
         }
         disconnectCallback();
@@ -502,20 +489,20 @@ public:
         double time_before_find = ros::Time::now().toSec();
         bool found = m_marker_detector->findPattern(*image, res);
         ROS_INFO("[cob_marker] findPattern: runtime %f s ; %d pattern found", (ros::Time::now().toSec() - time_before_find), (int)res.size());
-        if(found)
+        pose_array_size = res.size();
+        if(pose_array_size > 0)
         {
             pose_array_size = res.size();
-            ROS_INFO("pose_array_size: %i", pose_array_size);
        
             for (unsigned int i=0; i<pose_array_size; i++)
             {
-                if(res[i].pts_.size()<=3)
+                if(res[i].pts_.size()< 4)
                 {
-                  ROS_WARN("need 3 points");
+                  ROS_WARN("need 4 points");
                   continue;
                 }
 
-                ROS_DEBUG("num points detected: %i", res[i].pts_.size());
+                ROS_DEBUG("num points detected: %i", (int)res[i].pts_.size());
                 ROS_DEBUG("p1: %f %f", res[i].pts_[0](0), res[i].pts_[0](1)); 
                 ROS_DEBUG("p2: %f %f", res[i].pts_[1](0), res[i].pts_[1](1)); 
                 ROS_DEBUG("p3: %f %f", res[i].pts_[2](0), res[i].pts_[2](1)); 
@@ -534,16 +521,14 @@ public:
                 int idx = 0;
                 double corners[4][3]={{-0.5,0.5,0},{0.5,0.5,0},{-0.5,-0.5,0},{0.5,-0.5,0}};
 
-                const double edge_size = 0.1;
-
                 for (unsigned int j=0; j<res[i].pts_.size(); j++)
                 {
                     if (res[i].pts_[j](0) != 0)
                     {
                         p_pattern_coords = pattern_coords.ptr<float>(idx);
-                        p_pattern_coords[0] = -corners[j][1]*edge_size;
-                        p_pattern_coords[1] = corners[j][2]*edge_size;
-                        p_pattern_coords[2] = -corners[j][0]*edge_size;
+                        p_pattern_coords[0] = -corners[j][1]*detectorParams_.marker_size;
+                        p_pattern_coords[1] = corners[j][2]*detectorParams_.marker_size;
+                        p_pattern_coords[2] = -corners[j][0]*detectorParams_.marker_size;
 
                         p_image_coords = image_coords.ptr<float>(idx);
                         p_image_coords[0] = res[i].pts_[j](0);
@@ -566,17 +551,10 @@ public:
                 // p_rot[2] = M_PI/2.0;
                 // cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
                 //         rot, trans, true);
-                cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
-                         rot, trans, false);
+   
                 std::stringstream ss;
                 ss << "rot: "<<rot<<"\ntrans: "<<trans;
                 ROS_DEBUG("%s",ss.str().c_str());
-
-                //for(int i = 0; i < 3; i++)
-                //{
-                //    cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
-                //        rot, trans, true);
-                //}
 
                 // Apply transformation
                 cv::Mat rot_3x3_CfromO;
@@ -729,7 +707,6 @@ public:
                         det.pose.pose.position.x,det.pose.pose.position.y,det.pose.pose.position.z,
                         det.pose.pose.orientation.w, det.pose.pose.orientation.x, det.pose.pose.orientation.y, det.pose.pose.orientation.z);
             }
-            ROS_INFO("detection array size: %i",detection_array.detections.size());
             //Publish 2d imagebuffered_point_cloud_
             if (publish_2d_image_)
             {
@@ -772,6 +749,7 @@ public:
                     // RenderPose(color_image, rot_3x3, trans_3x1);
 
                     RenderPose(color_image, rot_vec[i], trans_vec[i]);
+                    RenderEdges(color_image, res[i]);
 
                     cv_bridge::CvImage cv_ptr;
                     cv_ptr.image = color_image;
@@ -878,6 +856,25 @@ public:
 
         if (res.empty())
             return false;
+        return true;
+    }
+
+    bool RenderEdges(cv::Mat& image, GeneralMarker::SMarker marker)
+    {
+        std::vector<cv::Point> vec_2d(4, cv::Point());
+        for(int i = 0; i < 4; i++)
+        {
+            vec_2d[i].x = marker.pts_[i](0);
+            vec_2d[i].y = marker.pts_[i](1);
+        }
+            
+        // Render results
+        int line_width = 1;
+        cv::line(image, vec_2d[0], vec_2d[1], cv::Scalar(0, 255, 0), line_width);
+        cv::line(image, vec_2d[0], vec_2d[2], cv::Scalar(0, 255, 0), line_width);
+        cv::line(image, vec_2d[2], vec_2d[3], cv::Scalar(0, 255, 0), line_width);
+        cv::line(image, vec_2d[3], vec_2d[1], cv::Scalar(0, 255, 0), line_width);
+
         return true;
     }
 
@@ -1104,6 +1101,9 @@ public:
 
         node_handle_.param<int>("dmtx_max_markers",detectorParams_.max_markers, 2);
         ROS_INFO("[cob_marker] dmtx_max_markers: %i", detectorParams_.max_markers);
+
+        node_handle_.param<double>("marker_size",detectorParams_.marker_size, 0.008);
+        ROS_INFO("[cob_marker] marker_size: %f", detectorParams_.marker_size);
 
         node_handle_.param<std::string>("frame_id",detectorParams_.frame_id,"/head_cam3d_link");
         ROS_INFO("[cob_marker] frame_id: %s", detectorParams_.frame_id.c_str());
