@@ -489,15 +489,16 @@ public:
         double time_before_find = ros::Time::now().toSec();
         bool found = m_marker_detector->findPattern(*image, res);
         ROS_INFO("[cob_marker] findPattern: runtime %f s ; %d pattern found", (ros::Time::now().toSec() - time_before_find), (int)res.size());
-        if(found)
+        pose_array_size = res.size();
+        if(pose_array_size > 0)
         {
             pose_array_size = res.size();
        
             for (unsigned int i=0; i<pose_array_size; i++)
             {
-                if(res[i].pts_.size()<=3)
+                if(res[i].pts_.size()< 4)
                 {
-                  ROS_WARN("need 3 points");
+                  ROS_WARN("need 4 points");
                   continue;
                 }
 
