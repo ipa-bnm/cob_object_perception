@@ -12,6 +12,7 @@
 	<param name="action_enabled" value="true" />
 	<param name="dmtx_max_markers" value="1"/>
 	<param name="publish_2d_image" value="true"/>
+	<param name="marker_size" value="0.1"/> <!-- in meter -->
   </node>
 
 </launch>
