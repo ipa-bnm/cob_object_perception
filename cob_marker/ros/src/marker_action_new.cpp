@@ -766,7 +766,7 @@ public:
                     // Broadcast transform of fiducial
                     tf::Transform transform;
                     std::stringstream tf_name;
-                    tf_name << "cob_marker_tag" <<"_" << res[i].code_;
+                    tf_name << "cob_marker_tag" <<"_" << res[i].code_.c_str();
                     transform.setOrigin(tf::Vector3(detection_array.detections[i].pose.pose.position.x,
                         detection_array.detections[i].pose.pose.position.y,
                         detection_array.detections[i].pose.pose.position.z));
@@ -774,7 +774,7 @@ public:
                         detection_array.detections[i].pose.pose.orientation.x,
                         detection_array.detections[i].pose.pose.orientation.y,
                         detection_array.detections[i].pose.pose.orientation.z));
-                    tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, tf_name.str()));
+                    tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, std::string(res[i].code_.c_str())));
                 }
             }
 
@@ -833,7 +833,7 @@ public:
                         marker_array_msg_.markers[idx].pose = detection_array.detections[i].pose.pose;
        
 
-                        ros::Duration one_hour = ros::Duration(10); // 1 second
+                        ros::Duration one_hour = ros::Duration(240); // 1 second
                         marker_array_msg_.markers[idx].lifetime = one_hour;
                         marker_array_msg_.markers[idx].scale.x = 0.01; // shaft diameter
                         marker_array_msg_.markers[idx].scale.y = 0.015; // head diameter
