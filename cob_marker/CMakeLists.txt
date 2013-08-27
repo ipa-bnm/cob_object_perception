@@ -11,8 +11,8 @@ include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
 
 rosbuild_init()
 
-INCLUDE_DIRECTORIES(${PROJECT_SOURCE_DIR}/common/include ${PROJECT_SOURCE_DIR}/ros/include /usr/include/ImageMagick)
-LINK_DIRECTORIES(${PROJECT_SOURCE_DIR}/libs )
+include_directories(${PROJECT_SOURCE_DIR}/common/include ${PROJECT_SOURCE_DIR}/ros/include /usr/include/ImageMagick)
+link_directories(${PROJECT_SOURCE_DIR}/libs )
 
 #set the default path for built executables to the "bin" directory
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)

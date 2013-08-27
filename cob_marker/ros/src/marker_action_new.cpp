@@ -103,7 +103,8 @@ using namespace message_filters;
 namespace cob_marker
 {
 
-typedef sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::CameraInfo> ColorDepthSyncPolicy;
+typedef sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::PointCloud2 ,sensor_msgs::CameraInfo> ColorDepthSyncPolicy;
+typedef sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::CameraInfo> ColorInfoSyncPolicy;
 
 
 /// @class CobFiducialsNode
@@ -125,6 +126,8 @@ class CobMarkerNode //: public nodelet::Nodelet
 private:
     ros::NodeHandle node_handle_;
 
+    typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
+
     boost::shared_ptr<image_transport::ImageTransport> image_transport_0_;
     boost::shared_ptr<image_transport::ImageTransport> image_transport_1_;
 
@@ -133,7 +136,8 @@ private:
     message_filters::Subscriber<sensor_msgs::PointCloud2> depth_camera_image_sub_;	///< camera information service
     message_filters::Subscriber<sensor_msgs::CameraInfo> color_camera_info_sub_;
 
-    boost::shared_ptr<message_filters::Synchronizer<ColorDepthSyncPolicy > > color_image_sub_sync_; ///< Synchronizer
+    boost::shared_ptr<message_filters::Synchronizer<ColorDepthSyncPolicy > > color_image_sub_sync_; ///< Synchronizer Color Depth
+    boost::shared_ptr<message_filters::Synchronizer<ColorInfoSyncPolicy > > color_info_sub_sync_; ///< Synchronizer Color Info
     tf::TransformListener transform_listener_; ///< tf transforms
 
     int sub_counter_; /// Number of subscribers to topic
@@ -169,6 +173,7 @@ private:
     bool publisher_enabled_; ///< Set if marker publisher should be enabled
     bool service_enabled_; ///< Set if marker service server should be enabled
     bool action_enabled_; ///< Set if marker action server should be enabled
+    bool use_pointcloud_;
 
     MarkerDetectorParams detectorParams_;
 
@@ -278,12 +283,21 @@ public:
         ROS_INFO("[cob_marker] Subscribing to camera topics");
 
         color_camera_image_sub_.subscribe(*image_transport_0_, "image_color", 1);
-        //depth_camera_image_sub_.subscribe(node_handle_, "point_cloud", 1);
         color_camera_info_sub_.subscribe(node_handle_, "camera_info", 1);
 
-        color_image_sub_sync_ = boost::shared_ptr<message_filters::Synchronizer<ColorDepthSyncPolicy> >(new message_filters::Synchronizer<ColorDepthSyncPolicy>(ColorDepthSyncPolicy(3)));
-        color_image_sub_sync_->connectInput(color_camera_image_sub_, color_camera_info_sub_);
-        color_image_sub_sync_->registerCallback(boost::bind(&CobMarkerNode::cameraSyncCallback, this, _1, _2));
+        if(use_pointcloud_)
+        {
+        	depth_camera_image_sub_.subscribe(node_handle_, "point_cloud", 1);
+        	color_image_sub_sync_ = boost::shared_ptr<message_filters::Synchronizer<ColorDepthSyncPolicy> >(new message_filters::Synchronizer<ColorDepthSyncPolicy>(ColorDepthSyncPolicy(3)));
+            color_image_sub_sync_->connectInput(color_camera_image_sub_, depth_camera_image_sub_, color_camera_info_sub_);
+            color_image_sub_sync_->registerCallback(boost::bind(&CobMarkerNode::cameraSyncDepthCallback, this, _1, _2, _3));
+        }
+        else
+        {
+        	color_info_sub_sync_ = boost::shared_ptr<message_filters::Synchronizer<ColorInfoSyncPolicy> >(new message_filters::Synchronizer<ColorInfoSyncPolicy>(ColorInfoSyncPolicy(3)));
+			color_info_sub_sync_->connectInput(color_camera_image_sub_, color_camera_info_sub_);
+			color_info_sub_sync_->registerCallback(boost::bind(&CobMarkerNode::cameraSyncCallback, this, _1, _2));
+        }
 
         sub_counter_++;
         ROS_INFO("[cob_marker] %i subscribers on camera topics [OK]", sub_counter_);
@@ -297,7 +311,7 @@ public:
             ROS_INFO("[cob_marker] Unsubscribing from camera topics");
 
             color_camera_image_sub_.unsubscribe();
-            //depth_camera_image_sub_.unsubscribe();
+            depth_camera_image_sub_.unsubscribe();
             color_camera_info_sub_.unsubscribe();
 
             sub_counter_--;
@@ -312,7 +326,8 @@ public:
 
     /// Callback is executed, when shared mode is selected
     /// Left and right is expressed when facing the back of the camera in horizontal orientation.
-    void cameraSyncCallback(const sensor_msgs::ImageConstPtr& color_camera_data,
+    void cameraSyncDepthCallback(const sensor_msgs::ImageConstPtr& color_camera_data,
+                            const sensor_msgs::PointCloud2ConstPtr& point_cloud_data,
                             const sensor_msgs::CameraInfoConstPtr& color_camera_info)
     {
         ROS_INFO("[cob_marker] color image callback");
@@ -338,11 +353,12 @@ public:
             received_timestamp_ = color_camera_data->header.stamp;
             received_frame_id_ = color_camera_data->header.frame_id;
             buffered_image_ = color_camera_data;
+            buffered_point_cloud_ = point_cloud_data;
 
             if (publisher_enabled_ == true && detect_marker_pub_.getNumSubscribers() > 0)
             {
                 cob_object_detection_msgs::DetectionArray detection_array;
-                detectMarkers(detection_array, buffered_point_cloud_, buffered_image_);
+                detectMarkersDepth(detection_array, buffered_point_cloud_, buffered_image_);
 
                 // Publish
                 detect_marker_pub_.publish(detection_array);
@@ -360,7 +376,50 @@ public:
         condQ_.notify_one();
     }
 
+    /// Callback is executed, when shared mode is selected
+	/// Left and right is expressed when facing the back of the camera in horizontal orientation.
+	void cameraSyncCallback(const sensor_msgs::ImageConstPtr& color_camera_data,
+							const sensor_msgs::CameraInfoConstPtr& color_camera_info)
+	{
+		ROS_INFO("[cob_marker] color image callback");
+		{
+			boost::mutex::scoped_lock lock( mutexQ_ );
 
+			if (camera_matrix_initialized_ == false)
+			{
+				camera_matrix_ = cv::Mat::zeros(3,3,CV_64FC1);
+				camera_matrix_.at<double>(0,0) = color_camera_info->K[0];
+				camera_matrix_.at<double>(0,2) = color_camera_info->K[2];
+				camera_matrix_.at<double>(1,1) = color_camera_info->K[4];
+				camera_matrix_.at<double>(1,2) = color_camera_info->K[5];
+				camera_matrix_.at<double>(2,2) = 1;
+
+				ROS_INFO("[cob_marker] Initializing cob_marker detector with camera matrix");
+				camera_matrix_initialized_ = true;
+
+				InitMat(camera_matrix_);
+			}
+
+			// Receive
+			received_timestamp_ = color_camera_data->header.stamp;
+			received_frame_id_ = color_camera_data->header.frame_id;
+			buffered_image_ = color_camera_data;
+
+			if (publisher_enabled_ == true && detect_marker_pub_.getNumSubscribers() > 0)
+			{
+				cob_object_detection_msgs::DetectionArray detection_array;
+				detectMarkers(detection_array, buffered_image_);
+
+				// Publish
+				detect_marker_pub_.publish(detection_array);
+			}
+
+			//synchronizer_received_ = true;
+
+			// Notify waiting thread
+		}
+		condQ_.notify_one();
+	}
 
     bool detectMarkerServiceCallback(cob_object_detection_msgs::DetectObjects::Request &req,
                                         cob_object_detection_msgs::DetectObjects::Response &res)
@@ -392,7 +451,10 @@ public:
                 if(result == true)
                 {
                     result = false;
-                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    if(use_pointcloud_)
+                    	result = detectMarkersDepth(res.object_list, buffered_point_cloud_, buffered_image_);
+                    else
+                    	result = detectMarkers(res.object_list, buffered_image_);
                     if(result)
                         break;
                 }
@@ -438,7 +500,10 @@ public:
                 if(result == true)
                 {
                     result = false;
-                    result = detectMarkers(res.object_list, buffered_point_cloud_, buffered_image_);
+                    if(use_pointcloud_)
+                    	result = detectMarkersDepth(res.object_list, buffered_point_cloud_, buffered_image_);
+                    else
+                    	result = detectMarkers(res.object_list, buffered_image_);
                     
                     if(result)
                     {
@@ -471,7 +536,7 @@ public:
     return true;
   }
 
-    bool detectMarkers(cob_object_detection_msgs::DetectionArray& detection_array,
+    bool detectMarkersDepth(cob_object_detection_msgs::DetectionArray& detection_array,
         sensor_msgs::PointCloud2ConstPtr point_cloud,
         sensor_msgs::ImageConstPtr image)
     {
@@ -483,6 +548,9 @@ public:
         std::vector<std::vector<double> >vec_vec7d;
         std::vector<cv::Mat> rot_vec;
         std::vector<cv::Mat> trans_vec;
+
+        pcl::PointCloud<pcl::PointXYZ> pc;
+        pcl::fromROSMsg(*point_cloud, pc);
 
         double time_before_find = ros::Time::now().toSec();
         bool found = m_marker_detector->findPattern(*image, res);
@@ -594,6 +662,7 @@ public:
                 det.pose.pose.position.x =  vec7d[0];
                 det.pose.pose.position.y =  vec7d[1];
                 det.pose.pose.position.z =  vec7d[2];
+
                 det.pose.pose.orientation.w =  vec7d[3];
                 det.pose.pose.orientation.x =  vec7d[4];
                 det.pose.pose.orientation.y =  vec7d[5];
@@ -602,104 +671,105 @@ public:
                 det.pose.header.stamp = received_timestamp_;
                 det.pose.header.frame_id = received_frame_id_;
 
-                detection_array.detections.push_back(det);
-                
 
-            // pcl::PointCloud<pcl::PointXYZ> pc;
-            // pcl::fromROSMsg(*point_cloud, pc);
+				//get 6DOF pose
+				if(res[i].pts_.size()<3)
+				{
+				ROS_WARN("need 3 points");
+				continue;
+				}
 
-            // for(size_t i=0; i<res.size(); i++)
-            // {
-            //   //get 6DOF pose
-            //   if(res[i].pts_.size()<3)
-            //   {
-            //     ROS_WARN("need 3 points");
-            //     continue;
-            //   }
+				/*
+				*   1---3
+				*   |   |
+				*   0---2
+				*/
+				Eigen::Vector2f d1 = (res[i].pts_[1]-res[i].pts_[0]).cast<float>();
+				Eigen::Vector2f d2 = (res[i].pts_[2]-res[i].pts_[0]).cast<float>();
 
-            //   /*
-            //    *   1---3
-            //    *   |   |
-            //    *   0---2
-            //    */
-            //   Eigen::Vector2f d1 = (res[i].pts_[1]-res[i].pts_[0]).cast<float>();
-            //   Eigen::Vector2f d2 = (res[i].pts_[2]-res[i].pts_[0]).cast<float>();
+				ROS_DEBUG("p1: %f %f", res[i].pts_[0](0), res[i].pts_[0](1));
+				ROS_DEBUG("p2: %f %f", res[i].pts_[1](0), res[i].pts_[1](1));
+				ROS_DEBUG("p3: %f %f", res[i].pts_[2](0), res[i].pts_[2](1));
+				ROS_DEBUG("p4: %f %f", res[i].pts_[3](0), res[i].pts_[3](1));
 
-            //   ROS_DEBUG("p1: %d %d", res[i].pts_[0](0), res[i].pts_[0](1)); 
-            //   ROS_DEBUG("p2: %d %d", res[i].pts_[1](0), res[i].pts_[1](1)); 
-            //   ROS_DEBUG("p3: %d %d", res[i].pts_[2](0), res[i].pts_[2](1)); 
-            //   ROS_DEBUG("p4: %d %d", res[i].pts_[3](0), res[i].pts_[3](1)); 
-              
-            //   ROS_DEBUG("d1: %f %f", d1(0), d1(1)); 
-            //   ROS_DEBUG("d2: %f %f", d2(0), d2(1)); 
+				ROS_DEBUG("d1: %f %f", d1(0), d1(1));
+				ROS_DEBUG("d2: %f %f", d2(0), d2(1));
 
-            //   int w1=std::max(std::abs(d1(0)),std::abs(d1(1)));
-            //   int w2=std::max(std::abs(d2(0)),std::abs(d2(1)));
-            //   d1/=w1;
-            //   d2/=w2;
+				int w1=std::max(std::abs(d1(0)),std::abs(d1(1)));
+				int w2=std::max(std::abs(d2(0)),std::abs(d2(1)));
+				d1/=w1;
+				d2/=w2;
 
-            //   pcl::PCA<pcl::PointCloud<pcl::PointXYZ>::PointType> pca1, pca2;
-            //   if(!compPCA(pca1, pc, w1, res[i].pts_[0],d1))
-            //     continue;
-            //   if(!compPCA(pca2, pc, w2, res[i].pts_[0],d2))
-            //     continue;
+				Eigen::Vector2i pp;
 
-            //   int i1=0;
-            //   if(pca1.getEigenValues()[1]>pca1.getEigenValues()[i1]) i1=1;
-            //   if(pca1.getEigenValues()[2]>pca1.getEigenValues()[i1]) i1=2;
-            //   int i2=0;
-            //   if(pca2.getEigenValues()[1]>pca2.getEigenValues()[i2]) i2=1;
-            //   if(pca2.getEigenValues()[2]>pca2.getEigenValues()[i2]) i2=2;
+				pp(0) = (int)(res[i].pts_[0](0) + 0.5);
+				pp(1) = (int)(res[i].pts_[0](1) + 0.5);
 
-            //   if(pca1.getEigenVectors().col(i1).sum()<0)
-            //     pca1.getEigenVectors().col(i1)*=-1;
-            //   if(pca2.getEigenVectors().col(i2).sum()<0)
-            //     pca2.getEigenVectors().col(i2)*=-1;
+				pcl::PCA<pcl::PointCloud<pcl::PointXYZ>::PointType> pca1, pca2;
+				if(!compPCA(pca1, pc, (float)w1, pp,d1))
+				continue;
+				if(!compPCA(pca2, pc, (float)w2, pp,d2))
+				continue;
 
-            //   Eigen::Vector3f m = (pca1.getMean()+pca2.getMean()).head<3>()/2;
-            //   Eigen::Matrix3f M, M2;
-            //   M.col(0) = pca2.getEigenVectors().col(i2);
-            //   M.col(1) = M.col(0).cross((Eigen::Vector3f)pca1.getEigenVectors().col(i1));
-            //   M.col(1).normalize();
-            //   M.col(2) = M.col(0).cross(M.col(1));
+				int i1=0;
+				if(pca1.getEigenValues()[1]>pca1.getEigenValues()[i1]) i1=1;
+				if(pca1.getEigenValues()[2]>pca1.getEigenValues()[i1]) i1=2;
+				int i2=0;
+				if(pca2.getEigenValues()[1]>pca2.getEigenValues()[i2]) i2=1;
+				if(pca2.getEigenValues()[2]>pca2.getEigenValues()[i2]) i2=2;
 
-            //   Eigen::Quaternionf q(M);
-            //   M2 = M;
-            //   M2.col(1)=M.col(2);
-            //   M2.col(2)=M.col(1);
-            //   Eigen::Quaternionf q2(M);
+				if(pca1.getEigenVectors().col(i1).sum()<0)
+				pca1.getEigenVectors().col(i1)*=-1;
+				if(pca2.getEigenVectors().col(i2).sum()<0)
+				pca2.getEigenVectors().col(i2)*=-1;
 
-            //   //TODO: please change to ROS_DEBUG
-            //   ss.clear();
-            //   ss.str("");
-            //   ss<<"E\n"<<pca1.getEigenVectors()<<"\n";
-            //   ss<<"E\n"<<pca2.getEigenVectors()<<"\n";
-            //   ss<<"E\n"<<pca1.getEigenValues()<<"\n";
-            //   ss<<"E\n"<<pca2.getEigenValues()<<"\n";
-            //   ROS_DEBUG("%s",ss.str().c_str());
-              
-            //   ss.clear();
-            //   ss.str("");
-            //   ss<<"M\n"<<M2<<"\n";
-            //   ss<<"d\n"<<M.col(0).dot(M.col(1))<<"\n";
-            //   ss<<"d\n"<<M.col(0).dot(M.col(2))<<"\n";
-            //   ss<<"d\n"<<M.col(1).dot(M.col(2))<<"\n";
-            //   ROS_DEBUG("%s",ss.str().c_str());
-            //   //std::cout<<"m\n"<<m<<"\n";
+				Eigen::Vector3f m = (pca1.getMean()+pca2.getMean()).head<3>()/2;
+				Eigen::Matrix3f M, M2;
+				M.col(0) = pca2.getEigenVectors().col(i2);
+				M.col(1) = M.col(0).cross((Eigen::Vector3f)pca1.getEigenVectors().col(i1));
+				M.col(1).normalize();
+				M.col(2) = M.col(0).cross(M.col(1));
 
-              // cob_object_detection_msgs::Detection det;
-              // det.header = point_cloud->header;
-              // det.label = res[i].code_.substr(0,3);
-              // det.detector = m_marker_detector->getName();
-              // det.pose.header = point_cloud->header;
-              // det.pose.pose.position.x = m(0);
-              // det.pose.pose.position.y = m(1);
-              // det.pose.pose.position.z = m(2);
-              // det.pose.pose.orientation.w = q2.w();
-              // det.pose.pose.orientation.x = q2.x();
-              // det.pose.pose.orientation.y = q2.y();
-              // det.pose.pose.orientation.z = q2.z();
-              // detection_array.detections.push_back(det);
+				Eigen::Quaternionf q(M);
+				M2 = M;
+				M2.col(1)=M.col(2);
+				M2.col(2)=M.col(1);
+				Eigen::Quaternionf q2(M);
+
+				//TODO: please change to ROS_DEBUG
+				ss.clear();
+				ss.str("");
+				ss<<"E\n"<<pca1.getEigenVectors()<<"\n";
+				ss<<"E\n"<<pca2.getEigenVectors()<<"\n";
+				ss<<"E\n"<<pca1.getEigenValues()<<"\n";
+				ss<<"E\n"<<pca2.getEigenValues()<<"\n";
+				ROS_DEBUG("%s",ss.str().c_str());
+
+				ss.clear();
+				ss.str("");
+				ss<<"M\n"<<M2<<"\n";
+				ss<<"d\n"<<M.col(0).dot(M.col(1))<<"\n";
+				ss<<"d\n"<<M.col(0).dot(M.col(2))<<"\n";
+				ss<<"d\n"<<M.col(1).dot(M.col(2))<<"\n";
+				ROS_DEBUG("%s",ss.str().c_str());
+				//std::cout<<"m\n"<<m<<"\n";
+
+				//cob_object_detection_msgs::Detection det;
+				//det.header = point_cloud->header;
+				//det.label = res[i].code_.substr(0,3);
+				//det.detector = m_marker_detector->getName();
+				//det.pose.header = point_cloud->header;
+
+				det.pose.pose.position.x = m(0);
+				det.pose.pose.position.y = m(1);
+				det.pose.pose.position.z = m(2);
+
+				det.pose.pose.orientation.w = q2.w();
+				det.pose.pose.orientation.x = q2.x();
+				det.pose.pose.orientation.y = q2.y();
+				det.pose.pose.orientation.z = q2.z();
+				detection_array.detections.push_back(det);
+				ROS_INFO("[cob_marker] used point cloud");
 
               ROS_INFO("[cob_marker] Detected Tag: '%s' at x,y,z,rw,rx,ry,rz ( %f, %f, %f, %f, %f, %f, %f )", det.label.c_str(),
                         det.pose.pose.position.x,det.pose.pose.position.y,det.pose.pose.position.z,
@@ -748,6 +818,8 @@ public:
 
                     RenderPose(color_image, rot_vec[i], trans_vec[i]);
                     RenderEdges(color_image, res[i]);
+                    RenderEdgePoints(color_image, res[i]);
+                    RenderText(color_image, res[i]);
 
                     cv_bridge::CvImage cv_ptr;
                     cv_ptr.image = color_image;
@@ -857,6 +929,293 @@ public:
         return true;
     }
 
+    bool detectMarkers(cob_object_detection_msgs::DetectionArray& detection_array,
+		sensor_msgs::ImageConstPtr image)
+	{
+		std::stringstream ss;
+		std::vector<GeneralMarker::SMarker> res;
+		unsigned int marker_array_size = 0;
+		unsigned int pose_array_size = 0;
+
+		std::vector<std::vector<double> >vec_vec7d;
+		std::vector<cv::Mat> rot_vec;
+		std::vector<cv::Mat> trans_vec;
+
+		double time_before_find = ros::Time::now().toSec();
+		bool found = m_marker_detector->findPattern(*image, res);
+		ROS_INFO("[cob_marker] findPattern: runtime %f s ; %d pattern found", (ros::Time::now().toSec() - time_before_find), (int)res.size());
+		pose_array_size = res.size();
+		if(pose_array_size > 0)
+		{
+			pose_array_size = res.size();
+
+			for (unsigned int i=0; i<pose_array_size; i++)
+			{
+				if(res[i].pts_.size()< 4)
+				{
+				  ROS_WARN("need 4 points");
+				  continue;
+				}
+
+				ROS_DEBUG("num points detected: %i", (int)res[i].pts_.size());
+				ROS_DEBUG("p1: %f %f", res[i].pts_[0](0), res[i].pts_[0](1));
+				ROS_DEBUG("p2: %f %f", res[i].pts_[1](0), res[i].pts_[1](1));
+				ROS_DEBUG("p3: %f %f", res[i].pts_[2](0), res[i].pts_[2](1));
+				ROS_DEBUG("p4: %f %f", res[i].pts_[3](0), res[i].pts_[3](1));
+
+				int nPoints = 0;
+				for (unsigned int j=0; j<res[i].pts_.size(); j++)
+					if (res[i].pts_[j](0) != 0)
+						nPoints++;
+
+				cv::Mat pattern_coords(nPoints, 3, CV_32F);
+				cv::Mat image_coords(nPoints, 2, CV_32F);
+
+				float* p_pattern_coords = 0;
+				float* p_image_coords = 0;
+				int idx = 0;
+				double corners[4][3]={{-0.5,0.5,0},{0.5,0.5,0},{-0.5,-0.5,0},{0.5,-0.5,0}};
+
+				for (unsigned int j=0; j<res[i].pts_.size(); j++)
+				{
+					if (res[i].pts_[j](0) != 0)
+					{
+						p_pattern_coords = pattern_coords.ptr<float>(idx);
+						p_pattern_coords[0] = -corners[j][1]*detectorParams_.marker_size;
+						p_pattern_coords[1] = corners[j][2]*detectorParams_.marker_size;
+						p_pattern_coords[2] = -corners[j][0]*detectorParams_.marker_size;
+
+						p_image_coords = image_coords.ptr<float>(idx);
+						p_image_coords[0] = res[i].pts_[j](0);
+						p_image_coords[1] = res[i].pts_[j](1);
+
+						idx++;
+					}
+				}
+
+				cv::Mat rot;
+				cv::Mat trans;
+				cv::Mat dist_coeffs;
+
+				cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs,
+						rot, trans, false);
+
+				// float *p_rot = rot.ptr<float>(0);
+				// p_rot[0] = 0;
+				// p_rot[1] = 0;
+				// p_rot[2] = M_PI/2.0;
+				// cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs,
+				//         rot, trans, true);
+
+				std::stringstream ss;
+				ss << "rot: "<<rot<<"\ntrans: "<<trans;
+				ROS_DEBUG("%s",ss.str().c_str());
+
+				// Apply transformation
+				cv::Mat rot_3x3_CfromO;
+				cv::Rodrigues(rot, rot_3x3_CfromO);
+
+				cv::Mat reprojection_matrix = m_camera_matrix;
+				if (!ProjectionValid(rot_3x3_CfromO, trans, reprojection_matrix, pattern_coords, image_coords))
+				{
+					ROS_WARN("Projection Invalid");
+					continue;
+				}
+
+				ApplyExtrinsics(rot_3x3_CfromO, trans);
+				rot_3x3_CfromO.copyTo(rot);
+
+				rot_vec.push_back(rot);
+				trans_vec.push_back(trans);
+
+				// TODO: Set Mask
+				cv::Mat frame(3,4, CV_64FC1);
+				for (int k=0; k<3; k++)
+					for (int l=0; l<3; l++)
+						frame.at<double>(k,l) = rot.at<double>(k,l);
+				frame.at<double>(0,3) = trans.at<double>(0,0);
+				frame.at<double>(1,3) = trans.at<double>(1,0);
+				frame.at<double>(2,3) = trans.at<double>(2,0);
+				std::vector<double> vec7d = FrameToVec7(frame);
+				vec_vec7d.push_back(vec7d);
+
+				cob_object_detection_msgs::Detection det;
+
+				det.label = res[i].code_.substr(0,3);
+				det.detector = "cob_marker";
+				det.score = 0;
+				det.bounding_box_lwh.x = 0;
+				det.bounding_box_lwh.y = 0;
+				det.bounding_box_lwh.z = 0;
+				// Results are given in CfromO
+				det.pose.pose.position.x =  vec7d[0];
+				det.pose.pose.position.y =  vec7d[1];
+				det.pose.pose.position.z =  vec7d[2];
+
+				det.pose.pose.orientation.w =  vec7d[3];
+				det.pose.pose.orientation.x =  vec7d[4];
+				det.pose.pose.orientation.y =  vec7d[5];
+				det.pose.pose.orientation.z =  vec7d[6];
+
+				det.pose.header.stamp = received_timestamp_;
+				det.pose.header.frame_id = received_frame_id_;
+
+				detection_array.detections.push_back(det);
+
+				ROS_INFO("[cob_marker] Detected Tag: '%s' at x,y,z,rw,rx,ry,rz ( %f, %f, %f, %f, %f, %f, %f )", det.label.c_str(),
+						det.pose.pose.position.x,det.pose.pose.position.y,det.pose.pose.position.z,
+						det.pose.pose.orientation.w, det.pose.pose.orientation.x, det.pose.pose.orientation.y, det.pose.pose.orientation.z);
+			}
+			//Publish 2d imagebuffered_point_cloud_
+			if (publish_2d_image_)
+			{
+				// Receive
+				cv_bridge::CvImageConstPtr cv_ptr;
+				try
+				{
+				  cv_ptr = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::BGR8);
+				}
+				catch (cv_bridge::Exception& e)
+				{
+				  ROS_ERROR("cv_bridge exception: %s", e.what());
+				  return false;
+				}
+
+				cv::Mat color_image = cv_ptr->image;
+
+				if(detection_array.detections.size() != pose_array_size)
+				{
+					ROS_ERROR("size error!");
+				}
+
+				for (unsigned int i=0; i<detection_array.detections.size(); i++)
+				{
+					RenderPose(color_image, rot_vec[i], trans_vec[i]);
+					RenderEdges(color_image, res[i]);
+					RenderEdgePoints(color_image, res[i]);
+					RenderText(color_image, res[i]);
+
+					cv_bridge::CvImage cv_ptr;
+					cv_ptr.image = color_image;
+					cv_ptr.encoding = CobMarkerNode::color_image_encoding_;
+					img2D_pub_.publish(cv_ptr.toImageMsg());
+				}
+			}
+
+			// Publish tf
+			if (publish_tf_)
+			{
+				for (unsigned int i=0; i<detection_array.detections.size(); i++)
+				{
+					// Broadcast transform of fiducial
+					tf::Transform transform;
+					std::stringstream tf_name;
+					tf_name << "cob_marker_tag" <<"_" << res[i].code_;
+					transform.setOrigin(tf::Vector3(detection_array.detections[i].pose.pose.position.x,
+						detection_array.detections[i].pose.pose.position.y,
+						detection_array.detections[i].pose.pose.position.z));
+					transform.setRotation(tf::Quaternion(detection_array.detections[i].pose.pose.orientation.w,
+						detection_array.detections[i].pose.pose.orientation.x,
+						detection_array.detections[i].pose.pose.orientation.y,
+						detection_array.detections[i].pose.pose.orientation.z));
+					tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, tf_name.str()));
+				}
+			}
+
+			// Publish marker array
+			if (publish_marker_array_)
+			{
+				// 3 arrows for each coordinate system of each detected fiducial
+				marker_array_size = 3*pose_array_size;
+				if (marker_array_size >= prev_marker_array_size_)
+				{
+					marker_array_msg_.markers.resize(marker_array_size);
+				}
+
+				boost::hash<std::string> string_hash;
+				// publish a coordinate system from arrow markers for each object
+				for (unsigned int i=0; i<detection_array.detections.size(); i++)
+				{
+					for (unsigned int j=0; j<3; j++)
+					{
+						unsigned int idx = 3*i+j;
+						marker_array_msg_.markers[idx].header.frame_id = received_frame_id_;// "/" + frame_id;//"tf_name.str()";
+						marker_array_msg_.markers[idx].header.stamp = received_timestamp_;
+						marker_array_msg_.markers[idx].ns = "cob_marker";
+						marker_array_msg_.markers[idx].id =  string_hash(res[i].code_);
+						marker_array_msg_.markers[idx].type = visualization_msgs::Marker::ARROW;
+						marker_array_msg_.markers[idx].action = visualization_msgs::Marker::ADD;
+						marker_array_msg_.markers[idx].color.a = 0.85;
+						marker_array_msg_.markers[idx].color.r = 0;
+						marker_array_msg_.markers[idx].color.g = 0;
+						marker_array_msg_.markers[idx].color.b = 0;
+
+						marker_array_msg_.markers[idx].points.resize(2);
+						marker_array_msg_.markers[idx].points[0].x = 0.0;
+						marker_array_msg_.markers[idx].points[0].y = 0.0;
+						marker_array_msg_.markers[idx].points[0].z = 0.0;
+						marker_array_msg_.markers[idx].points[1].x = 0.0;
+						marker_array_msg_.markers[idx].points[1].y = 0.0;
+						marker_array_msg_.markers[idx].points[1].z = 0.0;
+
+						if (j==0)
+						{
+							marker_array_msg_.markers[idx].points[1].x = 0.2;
+							marker_array_msg_.markers[idx].color.r = 255;
+						}
+						else if (j==1)
+						{
+							marker_array_msg_.markers[idx].points[1].y = 0.2;
+							marker_array_msg_.markers[idx].color.g = 255;
+						}
+						else if (j==2)
+						{
+							marker_array_msg_.markers[idx].points[1].z = 0.2;
+							marker_array_msg_.markers[idx].color.b = 255;
+						}
+
+						marker_array_msg_.markers[idx].pose = detection_array.detections[i].pose.pose;
+
+
+						ros::Duration one_hour = ros::Duration(10); // 1 second
+						marker_array_msg_.markers[idx].lifetime = one_hour;
+						marker_array_msg_.markers[idx].scale.x = 0.01; // shaft diameter
+						marker_array_msg_.markers[idx].scale.y = 0.015; // head diameter
+						marker_array_msg_.markers[idx].scale.z = 0; // head length 0=default
+					}
+
+					if (prev_marker_array_size_ > marker_array_size)
+					{
+						for (unsigned int i = marker_array_size; i < prev_marker_array_size_; ++i)
+						{
+							marker_array_msg_.markers[i].action = visualization_msgs::Marker::DELETE;
+						}
+					}
+					prev_marker_array_size_ = marker_array_size;
+
+					marker_marker_array_publisher_.publish(marker_array_msg_);
+				}
+			}
+		} // End: publish markers
+
+		if (res.empty())
+			return false;
+		return true;
+	}
+
+    bool RenderText(cv::Mat& image, GeneralMarker::SMarker marker)
+    {
+        cv::Point p0(marker.pts_[0](0)+2, marker.pts_[0](1)+4);
+        cv::Point p1(marker.pts_[1](0)+2, marker.pts_[1](1)+4);
+        cv::Point p2(marker.pts_[2](0)+2, marker.pts_[2](1)+4);
+        cv::Point p3(marker.pts_[3](0)+2, marker.pts_[3](1)+4);
+        putText(image, "0", p0, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
+        putText(image, "1", p1, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
+        putText(image, "2", p2, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
+        putText(image, "3", p3, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
+        return true;
+    }
+
     bool RenderEdges(cv::Mat& image, GeneralMarker::SMarker marker)
     {
         std::vector<cv::Point> vec_2d(4, cv::Point());
@@ -875,6 +1234,23 @@ public:
 
         return true;
     }
+
+    bool RenderEdgePoints(cv::Mat& image, GeneralMarker::SMarker marker)
+	{
+		std::vector<cv::Point> vec_2d(4, cv::Point());
+		for(int i = 0; i < 4; i++)
+		{
+			vec_2d[i].x = marker.pts_[i](0);
+			vec_2d[i].y = marker.pts_[i](1);
+		}
+
+		// Render results
+		cv::circle(image, vec_2d[0], 1, cv::Scalar(0, 0 , 255), -1);
+		cv::circle(image, vec_2d[1], 1, cv::Scalar(0, 0 , 255), -1);
+		cv::circle(image, vec_2d[2], 1, cv::Scalar(0, 0 , 255), -1);
+		cv::circle(image, vec_2d[3], 1, cv::Scalar(0, 0 , 255), -1);
+		return true;
+	}
 
     unsigned long RenderPose(cv::Mat& image, cv::Mat& rot_3x3_CfromO, cv::Mat& trans_3x1_CfromO)
     {
@@ -1108,6 +1484,9 @@ public:
 
         node_handle_.param<bool>("try_harder",detectorParams_.try_harder, true);
         ROS_INFO("[cob_marker] try_harder: %u", detectorParams_.try_harder);
+
+        node_handle_.param<bool>("use_pointcloud",use_pointcloud_, false);
+        ROS_INFO("[cob_marker] use_pointcloud: %u", use_pointcloud_);
         
         node_handle_.param<bool>("publish_marker_array", publish_marker_array_, false);
         if (publish_marker_array_)

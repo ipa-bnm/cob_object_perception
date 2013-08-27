@@ -2,6 +2,7 @@ all: installed
 
 TARBALL = build/zxing-2.1.tar.gz
 TARBALL_URL = https://code.ros.org/svn/release/download/thirdparty/zxing-2.1.tar.gz # originally from http://zxing.googlecode.com/files/ZXing-2.1.zip
+#TARBALL_URL = zxing-2.2.tar.gz
 SOURCE_DIR = build/zxing-2.1
 MD5SUM_FILE = zxing-2.1.tar.gz.md5sum
 
