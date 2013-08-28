@@ -13,7 +13,7 @@
  *
  * +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  *
- * Author: Jan Fischer, email:jan.fischer@ipa.fhg.de
+ * Author: Benjamin Maidel, email:jan.fischer@ipa.fhg.de
  * Supervised by: Jan Fischer, email:jan.fischer@ipa.fhg.de
  *
  * Date of creation: March 2013
@@ -330,7 +330,6 @@ public:
                             const sensor_msgs::PointCloud2ConstPtr& point_cloud_data,
                             const sensor_msgs::CameraInfoConstPtr& color_camera_info)
     {
-        ROS_INFO("[cob_marker] color image callback");
         {
             boost::mutex::scoped_lock lock( mutexQ_ );
 
@@ -381,7 +380,6 @@ public:
 	void cameraSyncCallback(const sensor_msgs::ImageConstPtr& color_camera_data,
 							const sensor_msgs::CameraInfoConstPtr& color_camera_info)
 	{
-		ROS_INFO("[cob_marker] color image callback");
 		{
 			boost::mutex::scoped_lock lock( mutexQ_ );
 
@@ -775,59 +773,7 @@ public:
                         det.pose.pose.position.x,det.pose.pose.position.y,det.pose.pose.position.z,
                         det.pose.pose.orientation.w, det.pose.pose.orientation.x, det.pose.pose.orientation.y, det.pose.pose.orientation.z);
             }
-            //Publish 2d imagebuffered_point_cloud_
-            if (publish_2d_image_)
-            {
-                // Receive
-                cv_bridge::CvImageConstPtr cv_ptr;
-                try
-                {
-                  cv_ptr = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::BGR8);
-                }
-                catch (cv_bridge::Exception& e)
-                {
-                  ROS_ERROR("cv_bridge exception: %s", e.what());
-                  return false;
-                }
 
-                cv::Mat color_image = cv_ptr->image;
-
-                if(detection_array.detections.size() != pose_array_size)
-                {
-                    ROS_ERROR("size error!");
-                }
-
-                for (unsigned int i=0; i<detection_array.detections.size(); i++)
-                {
-                    // std::vector<double> pose(7, 0.0);
-                    // pose[0] = detection_array.detections[i].pose.pose.position.x;
-                    // pose[1] = detection_array.detections[i].pose.pose.position.y;
-                    // pose[2] = detection_array.detections[i].pose.pose.position.z;
-                    // pose[3] = detection_array.detections[i].pose.pose.orientation.w;
-                    // pose[4] = detection_array.detections[i].pose.pose.orientation.x;
-                    // pose[5] = detection_array.detections[i].pose.pose.orientation.y;
-                    // pose[6] = detection_array.detections[i].pose.pose.orientation.z;
-                    // cv::Mat rot_3x3;
-                    // cv::Mat trans_3x1;
-                    // cv::Mat frame_4x4 = Vec7ToFrame(pose);
-
-                    // rot_3x3 = frame_4x4(cv::Rect(0, 0, 3, 3));
-                    // trans_3x1 = frame_4x4(cv::Rect(3, 0, 1, 3));
-
-                    // RenderPose(color_image, rot_3x3, trans_3x1);
-
-                    RenderPose(color_image, rot_vec[i], trans_vec[i]);
-                    RenderEdges(color_image, res[i]);
-                    RenderEdgePoints(color_image, res[i]);
-                    RenderText(color_image, res[i]);
-
-                    cv_bridge::CvImage cv_ptr;
-                    cv_ptr.image = color_image;
-                    cv_ptr.encoding = CobMarkerNode::color_image_encoding_;
-                    img2D_pub_.publish(cv_ptr.toImageMsg());
-                }
-            }
-            
             // Publish tf
             if (publish_tf_)
             {
@@ -924,6 +870,59 @@ public:
             }
         } // End: publish markers
 
+        //Publish 2d imagebuffered_point_cloud_
+		if (publish_2d_image_)
+		{
+			// Receive
+			cv_bridge::CvImageConstPtr cv_ptr;
+			try
+			{
+			  cv_ptr = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::BGR8);
+			}
+			catch (cv_bridge::Exception& e)
+			{
+			  ROS_ERROR("cv_bridge exception: %s", e.what());
+			  return false;
+			}
+
+			cv::Mat color_image = cv_ptr->image;
+
+			if(detection_array.detections.size() != pose_array_size)
+			{
+				ROS_ERROR("size error!");
+			}
+
+			cv_bridge::CvImage cv_ptr_tmp;
+			cv_ptr_tmp.encoding = CobMarkerNode::color_image_encoding_;
+
+			for (unsigned int i=0; i<detection_array.detections.size(); i++)
+			{
+				// std::vector<double> pose(7, 0.0);
+				// pose[0] = detection_array.detections[i].pose.pose.position.x;
+				// pose[1] = detection_array.detections[i].pose.pose.position.y;
+				// pose[2] = detection_array.detections[i].pose.pose.position.z;
+				// pose[3] = detection_array.detections[i].pose.pose.orientation.w;
+				// pose[4] = detection_array.detections[i].pose.pose.orientation.x;
+				// pose[5] = detection_array.detections[i].pose.pose.orientation.y;
+				// pose[6] = detection_array.detections[i].pose.pose.orientation.z;
+				// cv::Mat rot_3x3;
+				// cv::Mat trans_3x1;
+				// cv::Mat frame_4x4 = Vec7ToFrame(pose);
+
+				// rot_3x3 = frame_4x4(cv::Rect(0, 0, 3, 3));
+				// trans_3x1 = frame_4x4(cv::Rect(3, 0, 1, 3));
+
+				// RenderPose(color_image, rot_3x3, trans_3x1);
+
+				RenderPose(color_image, rot_vec[i], trans_vec[i]);
+				RenderEdges(color_image, res[i]);
+				RenderEdgePoints(color_image, res[i]);
+				RenderText(color_image, res[i]);
+			}
+			cv_ptr_tmp.image = color_image;
+			img2D_pub_.publish(cv_ptr_tmp.toImageMsg());
+		}
+
         if (res.empty())
             return false;
         return true;
@@ -944,12 +943,8 @@ public:
 		double time_before_find = ros::Time::now().toSec();
 		bool found = m_marker_detector->findPattern(*image, res);
 		ROS_INFO("[cob_marker] findPattern: runtime %f s ; %d pattern found", (ros::Time::now().toSec() - time_before_find), (int)res.size());
-		pose_array_size = res.size();
-		if(pose_array_size > 0)
-		{
-			pose_array_size = res.size();
 
-			for (unsigned int i=0; i<pose_array_size; i++)
+			for (unsigned int i=0; i<res.size(); i++)
 			{
 				if(res[i].pts_.size()< 4)
 				{
@@ -957,16 +952,13 @@ public:
 				  continue;
 				}
 
-				ROS_DEBUG("num points detected: %i", (int)res[i].pts_.size());
-				ROS_DEBUG("p1: %f %f", res[i].pts_[0](0), res[i].pts_[0](1));
-				ROS_DEBUG("p2: %f %f", res[i].pts_[1](0), res[i].pts_[1](1));
-				ROS_DEBUG("p3: %f %f", res[i].pts_[2](0), res[i].pts_[2](1));
-				ROS_DEBUG("p4: %f %f", res[i].pts_[3](0), res[i].pts_[3](1));
+//				ROS_DEBUG("num points detected: %i", (int)res[i].pts_.size());
+//				ROS_DEBUG("p1: %f %f", res[i].pts_[0](0), res[i].pts_[0](1));
+//				ROS_DEBUG("p2: %f %f", res[i].pts_[1](0), res[i].pts_[1](1));
+//				ROS_DEBUG("p3: %f %f", res[i].pts_[2](0), res[i].pts_[2](1));
+//				ROS_DEBUG("p4: %f %f", res[i].pts_[3](0), res[i].pts_[3](1));
 
-				int nPoints = 0;
-				for (unsigned int j=0; j<res[i].pts_.size(); j++)
-					if (res[i].pts_[j](0) != 0)
-						nPoints++;
+				int nPoints = res[i].pts_.size();
 
 				cv::Mat pattern_coords(nPoints, 3, CV_32F);
 				cv::Mat image_coords(nPoints, 2, CV_32F);
@@ -999,17 +991,6 @@ public:
 
 				cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs,
 						rot, trans, false);
-
-				// float *p_rot = rot.ptr<float>(0);
-				// p_rot[0] = 0;
-				// p_rot[1] = 0;
-				// p_rot[2] = M_PI/2.0;
-				// cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs,
-				//         rot, trans, true);
-
-				std::stringstream ss;
-				ss << "rot: "<<rot<<"\ntrans: "<<trans;
-				ROS_DEBUG("%s",ss.str().c_str());
 
 				// Apply transformation
 				cv::Mat rot_3x3_CfromO;
@@ -1065,41 +1046,6 @@ public:
 				ROS_INFO("[cob_marker] Detected Tag: '%s' at x,y,z,rw,rx,ry,rz ( %f, %f, %f, %f, %f, %f, %f )", det.label.c_str(),
 						det.pose.pose.position.x,det.pose.pose.position.y,det.pose.pose.position.z,
 						det.pose.pose.orientation.w, det.pose.pose.orientation.x, det.pose.pose.orientation.y, det.pose.pose.orientation.z);
-			}
-			//Publish 2d imagebuffered_point_cloud_
-			if (publish_2d_image_)
-			{
-				// Receive
-				cv_bridge::CvImageConstPtr cv_ptr;
-				try
-				{
-				  cv_ptr = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::BGR8);
-				}
-				catch (cv_bridge::Exception& e)
-				{
-				  ROS_ERROR("cv_bridge exception: %s", e.what());
-				  return false;
-				}
-
-				cv::Mat color_image = cv_ptr->image;
-
-				if(detection_array.detections.size() != pose_array_size)
-				{
-					ROS_ERROR("size error!");
-				}
-
-				for (unsigned int i=0; i<detection_array.detections.size(); i++)
-				{
-					RenderPose(color_image, rot_vec[i], trans_vec[i]);
-					RenderEdges(color_image, res[i]);
-					RenderEdgePoints(color_image, res[i]);
-					RenderText(color_image, res[i]);
-
-					cv_bridge::CvImage cv_ptr;
-					cv_ptr.image = color_image;
-					cv_ptr.encoding = CobMarkerNode::color_image_encoding_;
-					img2D_pub_.publish(cv_ptr.toImageMsg());
-				}
 			}
 
 			// Publish tf
@@ -1196,7 +1142,36 @@ public:
 					marker_marker_array_publisher_.publish(marker_array_msg_);
 				}
 			}
-		} // End: publish markers
+		 // End: publish markers
+
+		//Publish 2d imagebuffered_point_cloud_
+		if (publish_2d_image_)
+		{
+			// Receive
+			cv_bridge::CvImageConstPtr cv_ptr;
+			try
+			{
+			  cv_ptr = cv_bridge::toCvShare(image, sensor_msgs::image_encodings::BGR8);
+			}
+			catch (cv_bridge::Exception& e)
+			{
+			  ROS_ERROR("cv_bridge exception: %s", e.what());
+			  return false;
+			}
+
+			cv::Mat color_image = cv_ptr->image;
+			for (unsigned int i=0; i<detection_array.detections.size(); i++)
+			{
+				RenderPose(color_image, rot_vec[i], trans_vec[i]);
+				RenderEdges(color_image, res[i]);
+				RenderEdgePoints(color_image, res[i]);
+				RenderText(color_image, res[i]);
+			}
+			cv_bridge::CvImage cv_ptr_tmp;
+			cv_ptr_tmp.encoding = CobMarkerNode::color_image_encoding_;
+			cv_ptr_tmp.image = color_image;
+			img2D_pub_.publish(cv_ptr_tmp.toImageMsg());
+		}
 
 		if (res.empty())
 			return false;
@@ -1205,14 +1180,14 @@ public:
 
     bool RenderText(cv::Mat& image, GeneralMarker::SMarker marker)
     {
-        cv::Point p0(marker.pts_[0](0)+2, marker.pts_[0](1)+4);
-        cv::Point p1(marker.pts_[1](0)+2, marker.pts_[1](1)+4);
-        cv::Point p2(marker.pts_[2](0)+2, marker.pts_[2](1)+4);
-        cv::Point p3(marker.pts_[3](0)+2, marker.pts_[3](1)+4);
-        putText(image, "0", p0, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
-        putText(image, "1", p1, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
-        putText(image, "2", p2, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
-        putText(image, "3", p3, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.3, cvScalar(0,0,250), 1);
+        cv::Point p0(marker.pts_[0](0)+4, marker.pts_[0](1)+4);
+        cv::Point p1(marker.pts_[1](0)+4, marker.pts_[1](1)+4);
+        cv::Point p2(marker.pts_[2](0)+4, marker.pts_[2](1)+4);
+        cv::Point p3(marker.pts_[3](0)+4, marker.pts_[3](1)+4);
+        putText(image, "0", p0, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.5, cvScalar(0,0,250), 1);
+        putText(image, "1", p1, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.5, cvScalar(0,0,250), 1);
+        putText(image, "2", p2, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.5, cvScalar(0,0,250), 1);
+        putText(image, "3", p3, cv::FONT_HERSHEY_COMPLEX_SMALL, 0.5, cvScalar(0,0,250), 1);
         return true;
     }
 

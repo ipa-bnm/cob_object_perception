@@ -10,7 +10,7 @@
 	<param name="publisher_enabled" value="true" />
 	<param name="service_enabled" value="true" />
 	<param name="action_enabled" value="true" />
-	<param name="dmtx_max_markers" value="3"/>
+	<param name="dmtx_max_markers" value="2"/>
 	<param name="publish_2d_image" value="true"/>
 	<param name="marker_size" value="0.08"/> <!-- in meter -->
 	<param name="use_pointcloud" value="false"/>
