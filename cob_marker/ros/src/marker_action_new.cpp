@@ -361,14 +361,7 @@ public:
 
                 // Publish
                 detect_marker_pub_.publish(detection_array);
-
-                // cv_bridge::CvImage cv_ptr;
-                // cv_ptr.image = color_mat_8U3_;
-                // cv_ptr.encoding = CobFiducialsNode::color_image_encoding_;
-                // img2D_pub_.publish(cv_ptr.toImageMsg());
             }
-
-            //synchronizer_received_ = true;
 
             // Notify waiting thread
         }
@@ -608,13 +601,6 @@ public:
 
                 cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
                         rot, trans, false);
-
-                // float *p_rot = rot.ptr<float>(0);
-                // p_rot[0] = 0;
-                // p_rot[1] = 0;
-                // p_rot[2] = M_PI/2.0;
-                // cv::solvePnP(pattern_coords, image_coords, m_camera_matrix, dist_coeffs, 
-                //         rot, trans, true);
    
                 std::stringstream ss;
                 ss << "rot: "<<rot<<"\ntrans: "<<trans;
