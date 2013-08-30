@@ -67,7 +67,8 @@ bool Marker_DMTX::findPattern(const sensor_msgs::Image &img, std::vector<SMarker
 {
   bool ret = true;
   int count=0;
-  DmtxImage *dimg = dmtxImageCreate((unsigned char*)&img.data[0], img.width, img.height, DmtxPack24bppRGB);
+  //DmtxImage *dimg = dmtxImageCreate((unsigned char*)&img.data[0], img.width, img.height, DmtxPack24bppRGB);
+  DmtxImage *dimg = dmtxImageCreate((unsigned char*)&img.data[0], img.width, img.height, DmtxPack8bppK);
   ROS_ASSERT(dimg);
 
   DmtxDecode *dec = dmtxDecodeCreate(dimg, 1);
