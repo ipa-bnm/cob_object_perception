@@ -164,6 +164,11 @@ private:
 
     bool publish_tf_;
     tf::TransformBroadcaster tf_broadcaster_; ///< Broadcast transforms of detected fiducials
+    ros::Timer tf_timer_;
+    int tf_broadcast_counter_;
+    cob_object_detection_msgs::DetectionArray current_detection_array_;
+
+
     bool publish_2d_image_;
     bool publish_marker_array_; ///< Publish coordinate systems of detected fiducials as marker for rviz
     unsigned int prev_marker_array_size_; ///< Size of previously published marker array
@@ -763,21 +768,10 @@ public:
             // Publish tf
             if (publish_tf_)
             {
-                for (unsigned int i=0; i<detection_array.detections.size(); i++)
-                {
-                    // Broadcast transform of fiducial
-                    tf::Transform transform;
-                    std::stringstream tf_name;
-                    tf_name << "cob_marker_tag" <<"_" << res[i].code_.c_str();
-                    transform.setOrigin(tf::Vector3(detection_array.detections[i].pose.pose.position.x,
-                        detection_array.detections[i].pose.pose.position.y,
-                        detection_array.detections[i].pose.pose.position.z));
-                    transform.setRotation(tf::Quaternion(detection_array.detections[i].pose.pose.orientation.w,
-                        detection_array.detections[i].pose.pose.orientation.x,
-                        detection_array.detections[i].pose.pose.orientation.y,
-                        detection_array.detections[i].pose.pose.orientation.z));
-                    tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, std::string(res[i].code_.c_str())));
-                }
+                current_detection_array_ = detection_array;
+                tf_broadcast_counter_ = 0;
+                tf_timer_ = node_handle_.createTimer(ros::Duration(0.05), &CobMarkerNode::tf_timer_callback_, this, true);
+               
             }
 
             // Publish marker array
@@ -835,7 +829,7 @@ public:
                         marker_array_msg_.markers[idx].pose = detection_array.detections[i].pose.pose;
        
 
-                        ros::Duration one_hour = ros::Duration(240); // 1 second
+                        ros::Duration one_hour = ros::Duration(10); // 1 second
                         marker_array_msg_.markers[idx].lifetime = one_hour;
                         marker_array_msg_.markers[idx].scale.x = 0.01; // shaft diameter
                         marker_array_msg_.markers[idx].scale.y = 0.015; // head diameter
@@ -912,6 +906,30 @@ public:
         if (res.empty())
             return false;
         return true;
+    }
+
+    void tf_timer_callback_(const ros::TimerEvent&)
+    {
+         for (unsigned int i=0; i<current_detection_array_.detections.size(); i++)
+            {
+                // Broadcast transform of fiducial
+                tf::Transform transform;
+                std::stringstream tf_name;
+                tf_name << "cob_marker_tag" ;//<<"_" << res[i].code_;
+                transform.setOrigin(tf::Vector3(current_detection_array_.detections[i].pose.pose.position.x,
+                    current_detection_array_.detections[i].pose.pose.position.y,
+                    current_detection_array_.detections[i].pose.pose.position.z));
+                transform.setRotation(tf::Quaternion(current_detection_array_.detections[i].pose.pose.orientation.w,
+                    current_detection_array_.detections[i].pose.pose.orientation.x,
+                    current_detection_array_.detections[i].pose.pose.orientation.y,
+                    current_detection_array_.detections[i].pose.pose.orientation.z));
+                tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, tf_name.str()));
+            }
+            if(tf_broadcast_counter_ < 100){
+                tf_broadcast_counter_++;
+                tf_timer_ = node_handle_.createTimer(ros::Duration(0.05), &CobMarkerNode::tf_timer_callback_, this, true);
+            }
+
     }
 
     bool detectMarkers(cob_object_detection_msgs::DetectionArray& detection_array,
@@ -1037,20 +1055,13 @@ public:
 			// Publish tf
 			if (publish_tf_)
 			{
-				for (unsigned int i=0; i<detection_array.detections.size(); i++)
+                // Publish tf
+                if (publish_tf_)
 				{
-					// Broadcast transform of fiducial
-					tf::Transform transform;
-					std::stringstream tf_name;
-					tf_name << "cob_marker_tag" <<"_" << res[i].code_;
-					transform.setOrigin(tf::Vector3(detection_array.detections[i].pose.pose.position.x,
-						detection_array.detections[i].pose.pose.position.y,
-						detection_array.detections[i].pose.pose.position.z));
-					transform.setRotation(tf::Quaternion(detection_array.detections[i].pose.pose.orientation.w,
-						detection_array.detections[i].pose.pose.orientation.x,
-						detection_array.detections[i].pose.pose.orientation.y,
-						detection_array.detections[i].pose.pose.orientation.z));
-					tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, tf_name.str()));
+                    current_detection_array_ = detection_array;
+                    tf_broadcast_counter_ = 0;
+                    tf_timer_ = node_handle_.createTimer(ros::Duration(0.05), &CobMarkerNode::tf_timer_callback_, this, true);
+                   
 				}
 			}
 
