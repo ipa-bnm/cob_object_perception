@@ -6,6 +6,8 @@ import rospy
 import actionlib
 import cob_object_detection_msgs.msg
 from tf.transformations import *
+import tf
+
 
 def marker_client():
     client = actionlib.SimpleActionClient('/cob_marker/object_detection', cob_object_detection_msgs.msg.DetectObjectsAction)
@@ -23,9 +25,15 @@ def marker_client():
 if __name__ == '__main__':
     try:
         rospy.init_node('cob_marker_client')
+	listener = tf.TransformListener()
+	rospy.sleep(1.0)
         result = marker_client()
         print "Result:"
         print result
-        rospy.sleep(0.05)
+        #rospy.sleep(0.5)
+	bpose = listener.transformPose('/base_link',result.object_list.detections[0].pose)
+	print bpose
+	ori = bpose.pose.orientation
+	print euler_from_quaternion((ori.x, ori.y, ori.z, ori.w))
     except rospy.ROSInterruptException:
         print "program interrupted before completion"
