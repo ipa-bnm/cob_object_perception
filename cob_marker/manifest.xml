@@ -22,6 +22,7 @@
   <depend package="actionlib"/>
   <depend package="libzxing"/>
   <depend package="image_transport"/>
+  <depend package="sensor_msgs"/>
 
   <rosdep name="libdmtx-dev"/>
 

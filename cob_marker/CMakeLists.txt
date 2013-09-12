@@ -29,6 +29,10 @@ rosbuild_add_executable(cob_marker
 	common/src/MagickBitmapSource.cpp
 )
 
+rosbuild_add_executable(transform_helper
+	ros/src/transform_helper.cpp
+)
+
 target_link_libraries(cob_marker dmtx)
 rosbuild_link_boost(cob_marker signals)
 

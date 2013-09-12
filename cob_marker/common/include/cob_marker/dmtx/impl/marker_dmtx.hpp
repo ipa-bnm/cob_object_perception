@@ -57,18 +57,26 @@
 *
 ****************************************************************/
 
-
-
-
 #include <dmtx.h>
-
 
 bool Marker_DMTX::findPattern(const sensor_msgs::Image &img, std::vector<SMarker> &res)
 {
   bool ret = true;
   int count=0;
-  //DmtxImage *dimg = dmtxImageCreate((unsigned char*)&img.data[0], img.width, img.height, DmtxPack24bppRGB);
-  DmtxImage *dimg = dmtxImageCreate((unsigned char*)&img.data[0], img.width, img.height, DmtxPack8bppK);
+  int pack = 0;
+  if((img.encoding == sensor_msgs::image_encodings::MONO8))
+	  pack = DmtxPack8bppK;
+  else if((img.encoding == sensor_msgs::image_encodings::RGB16))
+	  pack = DmtxPack16bppRGB;
+  else if((img.encoding == sensor_msgs::image_encodings::BGR16))
+  	  pack = DmtxPack16bppBGR;
+  else
+  {
+	  ROS_ERROR("Unsupported Image encoding Format");
+	  return false;
+  }
+
+  DmtxImage *dimg = dmtxImageCreate((unsigned char*)&img.data[0], img.width, img.height, pack);
   ROS_ASSERT(dimg);
 
   DmtxDecode *dec = dmtxDecodeCreate(dimg, 1);

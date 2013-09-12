@@ -168,7 +168,8 @@ private:
     int tf_broadcast_counter_;
     cob_object_detection_msgs::DetectionArray current_detection_array_;
 
-
+    bool service_called_;
+    bool action_called_;
     bool publish_2d_image_;
     bool publish_marker_array_; ///< Publish coordinate systems of detected fiducials as marker for rviz
     unsigned int prev_marker_array_size_; ///< Size of previously published marker array
@@ -224,6 +225,10 @@ public:
     /// @return <code>true</code> on success, <code>false</code> otherwise
     bool init()
     {
+//    	tf::Quaternion quad;
+//    	quad.setRPY(0, -(3.14159265359/2), 0);
+//    	ROS_INFO("w: %f  x: %f  y: %f  z: %f",quad.getW(), quad.getX(), quad.getY(), quad.getZ() );
+
         if (loadParameters() == false) return false;
 
         ros::SubscriberStatusCallback imgConnect    = boost::bind(&CobMarkerNode::connectCallback, this);
@@ -252,6 +257,8 @@ public:
 
         //synchronizer_received_ = false;
         prev_marker_array_size_ = 0;
+	service_called_ = false;
+	action_called_ = false;
 
         ROS_INFO("[cob_marker] Setting up marker detector library");
         m_marker_detector = boost::shared_ptr<GeneralMarker>(setupMarkerDetector());
@@ -421,6 +428,7 @@ public:
                                         cob_object_detection_msgs::DetectObjects::Response &res)
     {
         ROS_INFO("[cob_marker] Service Callback");
+	service_called_ = true;
         // Connect to image topics
         bool result = true;
         //synchronizer_received_ = false;
@@ -458,7 +466,7 @@ public:
             }
         }
         disconnectCallback();
-
+	service_called_ = false;
         return result;
     }
 
@@ -466,6 +474,7 @@ public:
     {
         ROS_INFO("[cob_marker] Action Callback");
         bool result = true;
+	action_called_=true;
         connectCallback();
         cob_object_detection_msgs::DetectObjectsResult res;
 
@@ -513,6 +522,7 @@ public:
             detect_marker_action_->setAborted(res);
 
         disconnectCallback();
+	action_called_ = false;
     }
 
     bool compPCA(pcl::PCA<pcl::PointCloud<pcl::PointXYZ>::PointType> &pca, const pcl::PointCloud<pcl::PointXYZ> &pc, const float w, const Eigen::Vector2i &o, const Eigen::Vector2f &d) {
@@ -778,7 +788,7 @@ public:
             if (publish_marker_array_)
             {
                 // 3 arrows for each coordinate system of each detected fiducial
-                marker_array_size = 3*pose_array_size;
+                marker_array_size = 3*res.size();
                 if (marker_array_size >= prev_marker_array_size_)
                 {
                     marker_array_msg_.markers.resize(marker_array_size);
@@ -867,7 +877,7 @@ public:
 
 			cv::Mat color_image = cv_ptr->image;
 
-			if(detection_array.detections.size() != pose_array_size)
+			if(detection_array.detections.size() != res.size())
 			{
 				ROS_ERROR("size error!");
 			}
@@ -919,15 +929,34 @@ public:
                 transform.setOrigin(tf::Vector3(current_detection_array_.detections[i].pose.pose.position.x,
                     current_detection_array_.detections[i].pose.pose.position.y,
                     current_detection_array_.detections[i].pose.pose.position.z));
-                transform.setRotation(tf::Quaternion(current_detection_array_.detections[i].pose.pose.orientation.w,
-                    current_detection_array_.detections[i].pose.pose.orientation.x,
+                transform.setRotation(tf::Quaternion(current_detection_array_.detections[i].pose.pose.orientation.x,
                     current_detection_array_.detections[i].pose.pose.orientation.y,
-                    current_detection_array_.detections[i].pose.pose.orientation.z));
+                    current_detection_array_.detections[i].pose.pose.orientation.z,
+                    current_detection_array_.detections[i].pose.pose.orientation.w));
                 tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, tf_name.str()));
             }
             if(tf_broadcast_counter_ < 100){
                 tf_broadcast_counter_++;
                 tf_timer_ = node_handle_.createTimer(ros::Duration(0.05), &CobMarkerNode::tf_timer_callback_, this, true);
+            }
+
+    }
+    void pub_tf()
+    {
+	    for (unsigned int i=0; i<current_detection_array_.detections.size(); i++)
+            {
+                // Broadcast transform of fiducial
+                tf::Transform transform;
+                std::stringstream tf_name;
+                tf_name << "cob_marker_tag" ;//<<"_" << res[i].code_;
+                transform.setOrigin(tf::Vector3(current_detection_array_.detections[i].pose.pose.position.x,
+                    current_detection_array_.detections[i].pose.pose.position.y,
+                    current_detection_array_.detections[i].pose.pose.position.z));
+                transform.setRotation(tf::Quaternion(current_detection_array_.detections[i].pose.pose.orientation.x,
+                    current_detection_array_.detections[i].pose.pose.orientation.y,
+                    current_detection_array_.detections[i].pose.pose.orientation.z,
+                    current_detection_array_.detections[i].pose.pose.orientation.w));
+                tf_broadcaster_.sendTransform(tf::StampedTransform(transform, ros::Time::now(), received_frame_id_, tf_name.str()));
             }
 
     }
@@ -938,7 +967,6 @@ public:
 		std::stringstream ss;
 		std::vector<GeneralMarker::SMarker> res;
 		unsigned int marker_array_size = 0;
-		unsigned int pose_array_size = 0;
 
 		std::vector<std::vector<double> >vec_vec7d;
 		std::vector<cv::Mat> rot_vec;
@@ -978,8 +1006,10 @@ public:
 					{
 						p_pattern_coords = pattern_coords.ptr<float>(idx);
 						p_pattern_coords[0] = -corners[j][1]*detectorParams_.marker_size;
-						p_pattern_coords[1] = corners[j][2]*detectorParams_.marker_size;
-						p_pattern_coords[2] = -corners[j][0]*detectorParams_.marker_size;
+						//p_pattern_coords[1] = corners[j][2]*detectorParams_.marker_size;
+						p_pattern_coords[1] = corners[j][0]*detectorParams_.marker_size;
+						//p_pattern_coords[2] = -corners[j][0]*detectorParams_.marker_size;
+						p_pattern_coords[2] = corners[j][2]*detectorParams_.marker_size;
 
 						p_image_coords = image_coords.ptr<float>(idx);
 						p_image_coords[0] = res[i].pts_[j](0);
@@ -1055,21 +1085,23 @@ public:
 			// Publish tf
 			if (publish_tf_)
 			{
-                // Publish tf
-                if (publish_tf_)
-				{
                     current_detection_array_ = detection_array;
+		    	if(!service_called_ && !action_called_)
+                {
+					pub_tf();
+		    	}
+		    	else
+		    	{
                     tf_broadcast_counter_ = 0;
                     tf_timer_ = node_handle_.createTimer(ros::Duration(0.05), &CobMarkerNode::tf_timer_callback_, this, true);
-                   
-				}
-			}
+		    	}
+            }
 
 			// Publish marker array
 			if (publish_marker_array_)
 			{
 				// 3 arrows for each coordinate system of each detected fiducial
-				marker_array_size = 3*pose_array_size;
+				marker_array_size = 3*res.size();
 				if (marker_array_size >= prev_marker_array_size_)
 				{
 					marker_array_msg_.markers.resize(marker_array_size);
@@ -1085,7 +1117,9 @@ public:
 						marker_array_msg_.markers[idx].header.frame_id = received_frame_id_;// "/" + frame_id;//"tf_name.str()";
 						marker_array_msg_.markers[idx].header.stamp = received_timestamp_;
 						marker_array_msg_.markers[idx].ns = "cob_marker";
-						marker_array_msg_.markers[idx].id =  string_hash(res[i].code_);
+						std::stringstream ss;
+						ss << res[i].code_ << " " << j;
+						marker_array_msg_.markers[idx].id =  string_hash(ss.str());
 						marker_array_msg_.markers[idx].type = visualization_msgs::Marker::ARROW;
 						marker_array_msg_.markers[idx].action = visualization_msgs::Marker::ADD;
 						marker_array_msg_.markers[idx].color.a = 0.85;
@@ -1167,7 +1201,10 @@ public:
 			cv_bridge::CvImage cv_ptr_tmp;
 			cv_ptr_tmp.encoding = CobMarkerNode::color_image_encoding_;
 			cv_ptr_tmp.image = color_image;
-			img2D_pub_.publish(cv_ptr_tmp.toImageMsg());
+			sensor_msgs::ImagePtr img = cv_ptr_tmp.toImageMsg();
+			img->header.frame_id = received_frame_id_;
+			img->header.stamp = received_timestamp_;
+			img2D_pub_.publish(img);
 		}
 
 		if (res.empty())
